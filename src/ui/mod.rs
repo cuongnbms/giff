@@ -8,14 +8,17 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-use crate::diff::FileChanges;
+use crate::diff::{self, DiffSource, FileChanges};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use ratatui::{prelude::*, Terminal};
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::mpsc;
 use std::{error::Error, io};
 
 use event_loop::run_ui;
@@ -35,10 +38,11 @@ fn restore_terminal() {
 
 pub fn run_app(
     file_changes: FileChanges,
-    left_label: &str,
-    right_label: &str,
+    left_label: String,
+    right_label: String,
     theme: theme::Theme,
     rebase_notification: Option<String>,
+    diff_source: DiffSource,
 ) -> Result<(), Box<dyn Error>> {
     // Install a panic hook that restores the terminal before printing the
     // panic message. Without this, a panic leaves the terminal in raw mode
@@ -77,7 +81,7 @@ pub fn run_app(
     }
 
     let app = App {
-        file_changes: &file_changes,
+        file_changes,
         left_label,
         right_label,
         current_file_idx: 0,
@@ -95,10 +99,19 @@ pub fn run_app(
         theme,
         theme_cycle,
         theme_cycle_idx: 0,
+        diff_source,
+    };
+
+    // Watch the working tree for changes so we can auto-reload the diff.
+    // The watcher is held in this scope so it stays alive for the UI's lifetime.
+    let (reload_tx, reload_rx) = mpsc::channel::<()>();
+    let _watcher = match diff::git_repo_root() {
+        Ok(root) => spawn_repo_watcher(&root, reload_tx).ok(),
+        Err(_) => None,
     };
 
     // Run the main loop
-    let res = run_ui(&mut terminal, app);
+    let res = run_ui(&mut terminal, app, &reload_rx);
 
     // Restore terminal
     restore_terminal();
@@ -115,4 +128,58 @@ pub fn run_app(
     }
 
     Ok(())
+}
+
+/// Watch `repo_root` recursively. Filesystem events that look meaningful for
+/// a git diff (working-tree edits, ref/index updates) are forwarded as a
+/// single `()` ping per event into `tx`. Noisy paths (`.git/objects/`,
+/// `.git/logs/`, `*.lock`) are ignored to avoid reload storms during git
+/// operations.
+fn spawn_repo_watcher(
+    repo_root: &str,
+    tx: mpsc::Sender<()>,
+) -> Result<notify::RecommendedWatcher, Box<dyn Error>> {
+    let repo_root_buf = std::path::PathBuf::from(repo_root);
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
+        let event = match res {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        // Only react to actual content/metadata changes.
+        if !matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+        ) {
+            return;
+        }
+
+        if event.paths.iter().all(|p| is_ignored_path(p, &repo_root_buf)) {
+            return;
+        }
+
+        let _ = tx.send(());
+    })?;
+
+    watcher.watch(Path::new(repo_root), RecursiveMode::Recursive)?;
+    Ok(watcher)
+}
+
+fn is_ignored_path(path: &Path, repo_root: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if name.ends_with(".lock") {
+            return true;
+        }
+    }
+
+    let rel = match path.strip_prefix(repo_root) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let rel_str = rel.to_string_lossy();
+    rel_str.starts_with(".git/objects/")
+        || rel_str.starts_with(".git/logs/")
+        || rel_str.starts_with(".git/info/")
+        || rel_str == ".git/FETCH_HEAD"
+        || rel_str == ".git/ORIG_HEAD"
 }

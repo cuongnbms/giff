@@ -15,6 +15,7 @@ exclude = ["HomebrewFormula"]
 clap = { version = "4.5.13", features = ["derive"] }
 crossterm = "0.28.1"
 dirs = "6.0.0"
+notify = "8"
 ratatui = { version = "0.30.0", features = ["all-widgets"] }
 regex = "1.10.6"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -2,6 +2,8 @@ use crate::diff;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use ratatui::{prelude::*, Terminal};
 use std::io;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use super::rebase::prepare_rebase_changes;
 use super::render::ui;
@@ -74,6 +76,58 @@ fn set_change_state(app: &mut App, state: ChangeState) {
     }
 }
 
+/// Re-run the diff using `app.diff_source` and merge the new state into `app`,
+/// preserving the user's current file selection and scroll positions where
+/// possible. No-op (silent) if the new diff is identical to the current one.
+fn reload_diff(app: &mut App) {
+    // Don't reload while the user is mid-rebase; their accept/reject state
+    // would be invalidated.
+    if matches!(app.app_mode, AppMode::Rebase) {
+        return;
+    }
+
+    let (new_changes, new_left, new_right) = match app.diff_source.fetch() {
+        Ok(v) => v,
+        Err(e) => {
+            app.status_message = Some(format!("Reload failed: {}", e));
+            return;
+        }
+    };
+
+    if new_changes == app.file_changes
+        && new_left == app.left_label
+        && new_right == app.right_label
+    {
+        return;
+    }
+
+    let prev_selected = app.file_names.get(app.current_file_idx).cloned();
+
+    let mut new_names: Vec<String> = new_changes.keys().cloned().collect();
+    new_names.sort();
+
+    // Drop scroll positions for files that no longer exist; keep the rest.
+    app.scroll_positions
+        .retain(|name, _| new_changes.contains_key(name));
+    for name in &new_names {
+        app.scroll_positions.entry(name.clone()).or_insert(0);
+    }
+
+    app.current_file_idx = match prev_selected {
+        Some(name) => new_names
+            .iter()
+            .position(|n| n == &name)
+            .unwrap_or(0),
+        None => 0,
+    };
+
+    app.file_changes = new_changes;
+    app.file_names = new_names;
+    app.left_label = new_left;
+    app.right_label = new_right;
+    app.status_message = Some("Diff reloaded".to_string());
+}
+
 fn navigate_rebase_file(app: &mut App, forward: bool) {
     let len = app.file_names.len();
     if len == 0 {
@@ -97,20 +151,61 @@ fn navigate_rebase_file(app: &mut App, forward: bool) {
 
 /// Returns `Ok(true)` when the app exits after a successful rebase
 /// (so the caller can print a message), `Ok(false)` for normal exit.
-pub fn run_ui<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<bool>
+pub fn run_ui<B: Backend>(
+    terminal: &mut Terminal<B>,
+    mut app: App,
+    reload_rx: &mpsc::Receiver<()>,
+) -> io::Result<bool>
 where
     std::io::Error: From<B::Error>,
 {
-    loop {
-        terminal.draw(|f| ui(f, &mut app))?;
+    // Coalesce reload signals so a burst of fs events triggers a single re-fetch.
+    const RELOAD_DEBOUNCE: Duration = Duration::from_millis(150);
+    let mut pending_reload_since: Option<Instant> = None;
+    let mut needs_redraw = true;
 
-        // Block for the first event, then drain any queued events before
-        // redrawing.  This batches rapid scroll inputs so the UI stays snappy.
+    loop {
+        if needs_redraw {
+            terminal.draw(|f| ui(f, &mut app))?;
+            needs_redraw = false;
+        }
+
+        // Drain any reload pings that arrived since the last iteration.
+        let mut got_reload = false;
+        while reload_rx.try_recv().is_ok() {
+            got_reload = true;
+        }
+        if got_reload {
+            pending_reload_since = Some(Instant::now());
+        }
+        if let Some(since) = pending_reload_since {
+            if since.elapsed() >= RELOAD_DEBOUNCE {
+                reload_diff(&mut app);
+                pending_reload_since = None;
+                needs_redraw = true;
+            }
+        }
+
+        // When a reload is pending, sleep up to the remaining debounce window so
+        // we wake exactly when it elapses. When idle, block indefinitely on
+        // crossterm input (the watcher thread will deliver fs pings on its own
+        // schedule, picked up at the next user input).
+        let poll_timeout = match pending_reload_since {
+            Some(since) => RELOAD_DEBOUNCE
+                .checked_sub(since.elapsed())
+                .unwrap_or(Duration::ZERO),
+            None => Duration::from_millis(250),
+        };
+
+        if !event::poll(poll_timeout)? {
+            continue;
+        }
         let first = event::read()?;
         let mut events = vec![first];
-        while event::poll(std::time::Duration::ZERO)? {
+        while event::poll(Duration::ZERO)? {
             events.push(event::read()?);
         }
+        needs_redraw = true;
 
         for ev in events {
             match ev {
@@ -458,10 +553,10 @@ where
 mod tests {
     use super::super::theme::Theme;
     use super::*;
-    use crate::diff::FileChanges;
+    use crate::diff::DiffSource;
     use std::collections::HashMap;
 
-    fn make_app(file_names: Vec<&str>, changes_for: Vec<&str>) -> App<'static> {
+    fn make_app(file_names: Vec<&str>, changes_for: Vec<&str>) -> App {
         let file_names: Vec<String> = file_names.into_iter().map(|s| s.to_string()).collect();
         let mut rebase_changes = HashMap::new();
         for name in &file_names {
@@ -480,13 +575,10 @@ mod tests {
             };
             rebase_changes.insert(name.clone(), changes);
         }
-        // App borrows file_changes, but we only need rebase navigation,
-        // so leak an empty map to satisfy the lifetime.
-        let file_changes: &'static FileChanges = Box::leak(Box::new(HashMap::new()));
         App {
-            file_changes,
-            left_label: "",
-            right_label: "",
+            file_changes: HashMap::new(),
+            left_label: String::new(),
+            right_label: String::new(),
             current_file_idx: 0,
             file_names,
             scroll_positions: HashMap::new(),
@@ -502,6 +594,7 @@ mod tests {
             theme: Theme::dark(),
             theme_cycle: vec![Theme::dark(), Theme::light()],
             theme_cycle_idx: 0,
+            diff_source: DiffSource::Uncommitted,
         }
     }
 

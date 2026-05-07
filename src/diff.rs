@@ -14,6 +14,27 @@ static ANSI_ESCAPE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[.*?
 pub type LineChange = (usize, String);
 pub type FileChanges = HashMap<String, (Vec<LineChange>, Vec<LineChange>)>;
 
+/// How to (re-)fetch the diff. Captures the user's CLI selection so the
+/// running UI can refresh itself without re-parsing argv.
+#[derive(Clone, Debug)]
+pub enum DiffSource {
+    Uncommitted,
+    ToRef(String),
+    Between { from: String, to: String },
+    CustomArgs(String),
+}
+
+impl DiffSource {
+    pub fn fetch(&self) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+        match self {
+            DiffSource::Uncommitted => get_uncommitted_changes(),
+            DiffSource::ToRef(r) => get_changes_to_ref(r),
+            DiffSource::Between { from, to } => get_changes_between(from, to),
+            DiffSource::CustomArgs(a) => get_changes_with_args(a),
+        }
+    }
+}
+
 // Get changes with completely custom diff args
 pub fn get_changes_with_args(args: &str) -> Result<(FileChanges, String, String), Box<dyn Error>> {
     let args_vec: Vec<&str> = args.split_whitespace().collect();
@@ -230,7 +251,7 @@ impl ChangeOp {
     }
 }
 
-fn git_repo_root() -> Result<String, Box<dyn Error>> {
+pub fn git_repo_root() -> Result<String, Box<dyn Error>> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()?;

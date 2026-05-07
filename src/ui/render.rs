@@ -430,7 +430,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
 
     render_diff_pane(
         f,
-        app.left_label,
+        &app.left_label,
         &aligned_base,
         current_file,
         scroll,
@@ -440,7 +440,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
     );
     render_diff_pane(
         f,
-        app.right_label,
+        &app.right_label,
         &aligned_head,
         current_file,
         scroll,

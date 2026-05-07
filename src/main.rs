@@ -48,20 +48,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Get diff data based on arguments
-    let (file_changes, left_label, right_label) = if let Some(diff_args) = &args.diff_args {
-        // Use custom diff arguments
-        diff::get_changes_with_args(diff_args)?
+    // Pick the diff source based on arguments and fetch the initial diff.
+    let diff_source = if let Some(diff_args) = &args.diff_args {
+        diff::DiffSource::CustomArgs(diff_args.clone())
     } else if !args.from.is_empty() && !args.to.is_empty() {
-        // Compare two refs (from..to)
-        diff::get_changes_between(&args.from, &args.to)?
+        diff::DiffSource::Between {
+            from: args.from.clone(),
+            to: args.to.clone(),
+        }
     } else if !args.from.is_empty() {
-        // Compare ref to working tree (like git diff <ref>)
-        diff::get_changes_to_ref(&args.from)?
+        diff::DiffSource::ToRef(args.from.clone())
     } else {
-        // Default behavior: show uncommitted changes
-        diff::get_uncommitted_changes()?
+        diff::DiffSource::Uncommitted
     };
+
+    let (file_changes, left_label, right_label) = diff_source.fetch()?;
 
     if file_changes.is_empty() {
         println!("No changes.");
@@ -84,10 +85,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Start the interactive UI
     ui::run_app(
         file_changes,
-        &left_label,
-        &right_label,
+        left_label,
+        right_label,
         theme,
         rebase_notification,
+        diff_source,
     )?;
 
     Ok(())

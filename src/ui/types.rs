@@ -1,4 +1,4 @@
-use crate::diff::FileChanges;
+use crate::diff::{DiffSource, FileChanges};
 use std::collections::HashMap;
 
 use super::theme::Theme;
@@ -27,10 +27,10 @@ pub struct Change {
     pub base_insert_pos: Option<usize>,
 }
 
-pub struct App<'a> {
-    pub file_changes: &'a FileChanges,
-    pub left_label: &'a str,
-    pub right_label: &'a str,
+pub struct App {
+    pub file_changes: FileChanges,
+    pub left_label: String,
+    pub right_label: String,
     pub current_file_idx: usize,
     pub file_names: Vec<String>,
     pub scroll_positions: HashMap<String, usize>,
@@ -47,6 +47,8 @@ pub struct App<'a> {
     pub theme: Theme,
     pub theme_cycle: Vec<Theme>,
     pub theme_cycle_idx: usize,
+    /// How to refresh the diff when the working tree changes.
+    pub diff_source: DiffSource,
 }
 
 pub enum Pane {
