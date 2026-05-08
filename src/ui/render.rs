@@ -124,21 +124,25 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .map(|s| s.as_str())
         .unwrap_or("");
 
-    let mut spans = vec![
-        Span::styled(
-            " giff ",
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("\u{2502} ", Style::default().fg(t.border_dim)),
-        Span::styled(
-            format!("{} \u{2192} {}", app.left_label, app.right_label),
-            Style::default().fg(t.fg_normal),
-        ),
-        Span::styled(" \u{2502} ", Style::default().fg(t.border_dim)),
-        Span::styled(mode.to_owned(), Style::default().fg(t.accent)),
-        Span::styled(" \u{2502} ", Style::default().fg(t.border_dim)),
-        Span::styled(view_mode.to_owned(), Style::default().fg(t.fg_dim)),
-    ];
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(" "));
+    if let Some(bs) = &app.branch_status {
+        if !bs.name.is_empty() {
+            spans.extend(branch_status_spans(t, bs));
+            spans.push(Span::styled(
+                " \u{2502} ",
+                Style::default().fg(t.border_dim),
+            ));
+        }
+    }
+    spans.push(Span::styled(
+        format!("{} \u{2192} {}", app.left_label, app.right_label),
+        Style::default().fg(t.fg_normal),
+    ));
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(t.border_dim)));
+    spans.push(Span::styled(mode.to_owned(), Style::default().fg(t.accent)));
+    spans.push(Span::styled(" \u{2502} ", Style::default().fg(t.border_dim)));
+    spans.push(Span::styled(view_mode.to_owned(), Style::default().fg(t.fg_dim)));
 
     if !current_file.is_empty() {
         spans.push(Span::styled(
@@ -162,6 +166,29 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
     let header = Paragraph::new(Line::from(spans)).style(Style::default().bg(t.bg_header));
     f.render_widget(header, area);
+}
+
+fn branch_status_spans<'a>(t: &Theme, bs: &crate::diff::BranchStatus) -> Vec<Span<'a>> {
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(
+        "\u{e0a0} ",
+        Style::default().fg(t.accent),
+    ));
+    spans.push(Span::styled(
+        bs.name.clone(),
+        Style::default().fg(t.fg_bright).add_modifier(Modifier::BOLD),
+    ));
+    if bs.upstream.is_some() {
+        spans.push(Span::styled(
+            format!(" \u{2191}{}", bs.ahead),
+            Style::default().fg(if bs.ahead > 0 { t.fg_added } else { t.fg_dim }),
+        ));
+        spans.push(Span::styled(
+            format!(" \u{2193}{}", bs.behind),
+            Style::default().fg(if bs.behind > 0 { t.fg_removed } else { t.fg_dim }),
+        ));
+    }
+    spans
 }
 
 pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {

@@ -140,6 +140,7 @@ fn reload_diff(app: &mut App) {
     app.file_names = new_names;
     app.left_label = new_left;
     app.right_label = new_right;
+    app.branch_status = diff::branch_status().ok();
     app.status_message = Some("Diff reloaded".to_string());
 }
 
@@ -940,6 +941,7 @@ mod tests {
             log_return_source: None,
             remotes: Vec::new(),
             current_remote_idx: 0,
+            branch_status: None,
         }
     }
 

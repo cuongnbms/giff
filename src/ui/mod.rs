@@ -105,6 +105,7 @@ pub fn run_app(
         log_return_source: None,
         remotes: Vec::new(),
         current_remote_idx: 0,
+        branch_status: diff::branch_status().ok(),
     };
 
     // Watch the working tree for changes so we can auto-reload the diff.

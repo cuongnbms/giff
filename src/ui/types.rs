@@ -1,4 +1,4 @@
-use crate::diff::{CommitInfo, DiffSource, FileChanges};
+use crate::diff::{BranchStatus, CommitInfo, DiffSource, FileChanges};
 use std::collections::HashMap;
 
 use super::theme::Theme;
@@ -60,6 +60,8 @@ pub struct App {
     /// Configured remotes shown in the picker. Empty unless `app_mode == RemotePicker`.
     pub remotes: Vec<String>,
     pub current_remote_idx: usize,
+    /// Current branch + ahead/behind counts shown in the header.
+    pub branch_status: Option<BranchStatus>,
 }
 
 pub enum Pane {

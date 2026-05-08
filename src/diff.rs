@@ -195,6 +195,48 @@ pub fn get_changes_between(
     ))
 }
 
+/// Snapshot of the current branch's relationship to its upstream, used by
+/// the UI status bar. `ahead`/`behind` are zero when there is no upstream or
+/// the counts cannot be determined.
+#[derive(Clone, Debug, Default)]
+pub struct BranchStatus {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
+pub fn branch_status() -> Result<BranchStatus, Box<dyn Error>> {
+    let name = current_branch().unwrap_or_default();
+    let upstream = get_upstream_branch().ok().flatten();
+
+    let (ahead, behind) = match &upstream {
+        Some(up) => count_ahead_behind(up).unwrap_or((0, 0)),
+        None => (0, 0),
+    };
+
+    Ok(BranchStatus {
+        name,
+        upstream,
+        ahead,
+        behind,
+    })
+}
+
+fn count_ahead_behind(upstream: &str) -> Result<(usize, usize), Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["rev-list", "--left-right", "--count", &format!("{}...HEAD", upstream)])
+        .output()?;
+    if !output.status.success() {
+        return Ok((0, 0));
+    }
+    let s = String::from_utf8_lossy(&output.stdout);
+    let mut parts = s.split_whitespace();
+    let behind = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+    Ok((ahead, behind))
+}
+
 pub fn get_upstream_branch() -> Result<Option<String>, Box<dyn Error>> {
     let output = Command::new("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD@{u}"])
