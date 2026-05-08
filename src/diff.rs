@@ -22,6 +22,7 @@ pub enum DiffSource {
     ToRef(String),
     Between { from: String, to: String },
     CustomArgs(String),
+    Commit(String),
 }
 
 impl DiffSource {
@@ -31,8 +32,76 @@ impl DiffSource {
             DiffSource::ToRef(r) => get_changes_to_ref(r),
             DiffSource::Between { from, to } => get_changes_between(from, to),
             DiffSource::CustomArgs(a) => get_changes_with_args(a),
+            DiffSource::Commit(h) => get_changes_for_commit(h),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct CommitInfo {
+    pub hash: String,
+    pub subject: String,
+}
+
+pub fn get_commit_log() -> Result<Vec<CommitInfo>, Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["log", "--pretty=format:%h %s", "--no-color"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to execute git log: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut commits = Vec::new();
+    for line in stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, ' ');
+        let hash = parts.next().unwrap_or("").to_string();
+        let subject = parts.next().unwrap_or("").to_string();
+        if !hash.is_empty() {
+            commits.push(CommitInfo { hash, subject });
+        }
+    }
+    Ok(commits)
+}
+
+pub fn get_changes_for_commit(
+    hash: &str,
+) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+    let output = Command::new("git")
+        .args([
+            "show",
+            "--no-color",
+            "--format=",
+            "-m",
+            "--first-parent",
+            hash,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to execute git show: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+
+    Ok((
+        parse_diff_output(&stdout)?,
+        format!("{}^", hash),
+        hash.to_string(),
+    ))
 }
 
 // Get changes with completely custom diff args

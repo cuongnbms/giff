@@ -73,6 +73,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         AppMode::Rebase => {
             render_rebase_ui(f, app, main_chunks[1]);
         }
+        AppMode::Log => {
+            render_log_ui(f, app, main_chunks[1]);
+        }
     }
 
     render_help(f, app, main_chunks[2]);
@@ -93,8 +96,15 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         ViewMode::Unified => "Unified",
     };
     let mode = match app.app_mode {
-        AppMode::Diff => "DIFF",
+        AppMode::Diff => {
+            if app.log_return_source.is_some() {
+                "DIFF (commit)"
+            } else {
+                "DIFF"
+            }
+        }
         AppMode::Rebase => "REBASE",
+        AppMode::Log => "LOG",
     };
     let file_count = app.file_names.len();
     let current = if file_count > 0 {
@@ -519,6 +529,96 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn render_log_ui(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let block = Block::default()
+        .title(Span::styled(
+            " Commits ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_focused));
+
+    if app.commits.is_empty() {
+        let empty = Paragraph::new(Span::styled(
+            "  No commits",
+            Style::default().fg(t.fg_dim),
+        ))
+        .block(block);
+        f.render_widget(empty, area);
+        return;
+    }
+
+    // Borders (2) + highlight symbol "▌ " (2)
+    const CHROME_WIDTH: u16 = 4;
+    let inner_width = area.width.saturating_sub(CHROME_WIDTH) as usize;
+
+    let items: Vec<ListItem> = app
+        .commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let is_current = i == app.current_commit_idx;
+            let subject_style = if is_current {
+                Style::default()
+                    .fg(t.fg_bright)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.fg_normal)
+            };
+
+            // hash + " " + subject; truncate the subject (tail) so the hash
+            // is always visible.
+            let hash_w = UnicodeWidthStr::width(c.hash.as_str());
+            let sep_w = 1;
+            let max_subject = inner_width.saturating_sub(hash_w + sep_w);
+            let subject = truncate_tail(&c.subject, max_subject);
+
+            ListItem::new(Line::from(vec![
+                Span::styled(c.hash.clone(), Style::default().fg(t.accent)),
+                Span::styled(" ", Style::default()),
+                Span::styled(subject, subject_style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().bg(t.bg_selection))
+        .highlight_symbol("\u{258c} ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(Some(app.current_commit_idx)),
+    );
+}
+
+/// Truncate `s` from the right with an ellipsis so it fits within `max_width`
+/// display columns. Used for commit subjects where the start is most useful.
+fn truncate_tail(s: &str, max_width: usize) -> String {
+    let display_width = UnicodeWidthStr::width(s);
+    if display_width <= max_width {
+        return s.to_string();
+    }
+    if max_width <= 1 {
+        return "\u{2026}".to_string();
+    }
+    let target = max_width - 1;
+    let mut width = 0;
+    let mut end_byte = 0;
+    for (idx, ch) in s.char_indices() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > target {
+            break;
+        }
+        width += ch_width;
+        end_byte = idx + ch.len_utf8();
+    }
+    format!("{}\u{2026}", &s[..end_byte])
+}
+
 fn render_rebase_notification(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     if let Some(notification) = &app.rebase_notification {
@@ -579,6 +679,7 @@ fn render_rebase_notification(f: &mut Frame, app: &App, area: Rect) {
 fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let is_rebase = matches!(app.app_mode, AppMode::Rebase);
+    let is_log = matches!(app.app_mode, AppMode::Log);
 
     let modal_width = 56u16;
     let modal_height = 29u16;
@@ -678,6 +779,20 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             empty(),
             row("?", "Toggle this help"),
         ]);
+    } else if is_log {
+        lines.extend(vec![
+            empty(),
+            section("Log"),
+            empty(),
+            row("Enter", "View diff of selected commit"),
+            row("L", "Close log view"),
+            row("Esc / q", "Back to diff mode"),
+            sep(inner_width),
+            empty(),
+            section("General"),
+            empty(),
+            row("?", "Toggle this help"),
+        ]);
     } else {
         lines.extend(vec![
             empty(),
@@ -689,6 +804,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("u", "Toggle unified / side-by-side"),
             row("t", "Toggle dark / light theme"),
             row("r", "Enter rebase mode"),
+            row("L", "Open commit log"),
             sep(inner_width),
             empty(),
             section("General"),
@@ -755,8 +871,8 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("h/l", "Panes"),
             ("u", "View"),
             ("t", "Theme"),
-            ("PgUp/Dn", "Page"),
             ("r", "Rebase"),
+            ("L", "Log"),
             ("?", "Help"),
         ],
         AppMode::Rebase => &[
@@ -766,6 +882,13 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("x", "Reject"),
             ("n/p", "Files"),
             ("c", "Commit"),
+            ("?", "Help"),
+        ],
+        AppMode::Log => &[
+            ("Esc", "Back"),
+            ("j/k", "Navigate"),
+            ("Enter", "Open"),
+            ("L", "Close"),
             ("?", "Help"),
         ],
     };

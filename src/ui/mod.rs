@@ -100,6 +100,9 @@ pub fn run_app(
         theme_cycle,
         theme_cycle_idx: 0,
         diff_source,
+        commits: Vec::new(),
+        current_commit_idx: 0,
+        log_return_source: None,
     };
 
     // Watch the working tree for changes so we can auto-reload the diff.

@@ -1,4 +1,4 @@
-use crate::diff;
+use crate::diff::{self, DiffSource};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use ratatui::{prelude::*, Terminal};
 use std::io;
@@ -80,9 +80,9 @@ fn set_change_state(app: &mut App, state: ChangeState) {
 /// preserving the user's current file selection and scroll positions where
 /// possible. No-op (silent) if the new diff is identical to the current one.
 fn reload_diff(app: &mut App) {
-    // Don't reload while the user is mid-rebase; their accept/reject state
-    // would be invalidated.
-    if matches!(app.app_mode, AppMode::Rebase) {
+    // Don't reload while the user is mid-rebase or browsing the commit log;
+    // either would invalidate the user's current selection state.
+    if matches!(app.app_mode, AppMode::Rebase | AppMode::Log) {
         return;
     }
 
@@ -126,6 +126,83 @@ fn reload_diff(app: &mut App) {
     app.left_label = new_left;
     app.right_label = new_right;
     app.status_message = Some("Diff reloaded".to_string());
+}
+
+/// Replace `app`'s diff state from the given source. Resets file selection
+/// and scroll positions to a clean slate. Used when switching to a commit's
+/// diff or restoring the original diff source on log exit.
+fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String> {
+    let (changes, left, right) = source.fetch().map_err(|e| e.to_string())?;
+    let mut names: Vec<String> = changes.keys().cloned().collect();
+    names.sort();
+
+    app.scroll_positions.clear();
+    for n in &names {
+        app.scroll_positions.insert(n.clone(), 0);
+    }
+    app.file_changes = changes;
+    app.file_names = names;
+    app.left_label = left;
+    app.right_label = right;
+    app.current_file_idx = 0;
+    app.diff_source = source;
+    Ok(())
+}
+
+fn enter_log_mode(app: &mut App) {
+    let commits = match diff::get_commit_log() {
+        Ok(c) => c,
+        Err(e) => {
+            app.status_message = Some(format!("git log failed: {}", e));
+            return;
+        }
+    };
+    if commits.is_empty() {
+        app.status_message = Some("No commits found".to_string());
+        return;
+    }
+    // Preserve the original diff source so Esc returns the user there.
+    // Only set on first entry — re-entering from a commit's diff keeps the
+    // truly original source intact.
+    if app.log_return_source.is_none() {
+        app.log_return_source = Some(app.diff_source.clone());
+    }
+    // Keep the commit selection across re-entries if the list hasn't changed.
+    if app.commits.is_empty() {
+        app.commits = commits;
+        app.current_commit_idx = 0;
+    }
+    app.app_mode = AppMode::Log;
+}
+
+fn exit_log_mode(app: &mut App) {
+    if let Some(src) = app.log_return_source.take() {
+        if let Err(e) = load_diff_from_source(app, src) {
+            app.status_message = Some(format!("Reload failed: {}", e));
+        }
+    }
+    app.commits.clear();
+    app.current_commit_idx = 0;
+    app.app_mode = AppMode::Diff;
+    app.focused_pane = Pane::FileList;
+}
+
+fn open_selected_commit(app: &mut App) {
+    let (hash, subject) = match app.commits.get(app.current_commit_idx) {
+        Some(c) => (c.hash.clone(), c.subject.clone()),
+        None => return,
+    };
+    let source = DiffSource::Commit(hash.clone());
+    if let Err(e) = load_diff_from_source(app, source) {
+        app.status_message = Some(format!("Failed to load commit: {}", e));
+        return;
+    }
+    app.app_mode = AppMode::Diff;
+    app.focused_pane = Pane::FileList;
+    app.status_message = Some(format!(
+        "Viewing {} \u{2014} {} \u{2502} L: log  Esc: back",
+        hash, subject
+    ));
 }
 
 fn navigate_rebase_file(app: &mut App, forward: bool) {
@@ -264,11 +341,33 @@ where
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             match app.app_mode {
-                                AppMode::Diff => return Ok(false),
+                                AppMode::Diff => {
+                                    // If the user drilled into a commit via the log,
+                                    // back out to the original diff first; only quit
+                                    // when there's nothing left to back out of.
+                                    if app.log_return_source.is_some() {
+                                        exit_log_mode(&mut app);
+                                    } else {
+                                        return Ok(false);
+                                    }
+                                }
                                 AppMode::Rebase => {
                                     // Return to diff mode without applying changes
                                     app.app_mode = AppMode::Diff;
                                 }
+                                AppMode::Log => {
+                                    exit_log_mode(&mut app);
+                                }
+                            }
+                        }
+                        KeyCode::Char('L') => match app.app_mode {
+                            AppMode::Diff => enter_log_mode(&mut app),
+                            AppMode::Log => exit_log_mode(&mut app),
+                            AppMode::Rebase => {}
+                        },
+                        KeyCode::Enter => {
+                            if let AppMode::Log = app.app_mode {
+                                open_selected_commit(&mut app);
                             }
                         }
                         KeyCode::Char('r') => {
@@ -317,6 +416,11 @@ where
                                     }
                                 }
                             }
+                            AppMode::Log => {
+                                if app.current_commit_idx + 1 < app.commits.len() {
+                                    app.current_commit_idx += 1;
+                                }
+                            }
                         },
                         KeyCode::Char('k') | KeyCode::Up => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -337,6 +441,11 @@ where
                             AppMode::Rebase => {
                                 if app.current_change_idx > 0 {
                                     app.current_change_idx -= 1;
+                                }
+                            }
+                            AppMode::Log => {
+                                if app.current_commit_idx > 0 {
+                                    app.current_commit_idx -= 1;
                                 }
                             }
                         },
@@ -370,6 +479,13 @@ where
                                     }
                                 }
                             }
+                            AppMode::Log => {
+                                if !app.commits.is_empty() {
+                                    let page = terminal.size()?.height.saturating_sub(6) as usize;
+                                    app.current_commit_idx = (app.current_commit_idx + page)
+                                        .min(app.commits.len() - 1);
+                                }
+                            }
                         },
                         KeyCode::PageUp => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -393,6 +509,11 @@ where
                                 app.current_change_idx =
                                     app.current_change_idx.saturating_sub(page);
                             }
+                            AppMode::Log => {
+                                let page = terminal.size()?.height.saturating_sub(6) as usize;
+                                app.current_commit_idx =
+                                    app.current_commit_idx.saturating_sub(page);
+                            }
                         },
                         KeyCode::Home => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -407,6 +528,9 @@ where
                             },
                             AppMode::Rebase => {
                                 app.current_change_idx = 0;
+                            }
+                            AppMode::Log => {
+                                app.current_commit_idx = 0;
                             }
                         },
                         KeyCode::End => match app.app_mode {
@@ -428,6 +552,10 @@ where
                                         }
                                     }
                                 }
+                            }
+                            AppMode::Log => {
+                                app.current_commit_idx =
+                                    app.commits.len().saturating_sub(1);
                             }
                         },
                         KeyCode::Tab => {
@@ -538,6 +666,19 @@ where
                                         }
                                     }
                                 }
+                                AppMode::Log => {
+                                    if !app.commits.is_empty() {
+                                        if is_down {
+                                            app.current_commit_idx =
+                                                (app.current_commit_idx + scroll_amount)
+                                                    .min(app.commits.len() - 1);
+                                        } else {
+                                            app.current_commit_idx = app
+                                                .current_commit_idx
+                                                .saturating_sub(scroll_amount);
+                                        }
+                                    }
+                                }
                             }
                         }
                         _ => {}
@@ -595,6 +736,9 @@ mod tests {
             theme_cycle: vec![Theme::dark(), Theme::light()],
             theme_cycle_idx: 0,
             diff_source: DiffSource::Uncommitted,
+            commits: Vec::new(),
+            current_commit_idx: 0,
+            log_return_source: None,
         }
     }
 

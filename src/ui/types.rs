@@ -1,4 +1,4 @@
-use crate::diff::{DiffSource, FileChanges};
+use crate::diff::{CommitInfo, DiffSource, FileChanges};
 use std::collections::HashMap;
 
 use super::theme::Theme;
@@ -6,6 +6,7 @@ use super::theme::Theme;
 pub enum AppMode {
     Diff,
     Rebase,
+    Log,
 }
 
 #[derive(Clone, PartialEq)]
@@ -49,6 +50,12 @@ pub struct App {
     pub theme_cycle_idx: usize,
     /// How to refresh the diff when the working tree changes.
     pub diff_source: DiffSource,
+    /// Commits loaded for log view (lazy-loaded on first entry to Log mode).
+    pub commits: Vec<CommitInfo>,
+    pub current_commit_idx: usize,
+    /// The diff source to restore when leaving Log mode (Esc/q).
+    /// Set when first entering Log mode; cleared when leaving.
+    pub log_return_source: Option<DiffSource>,
 }
 
 pub enum Pane {
