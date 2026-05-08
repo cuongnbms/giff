@@ -76,6 +76,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         AppMode::Log => {
             render_log_ui(f, app, main_chunks[1]);
         }
+        AppMode::RemotePicker => {}
     }
 
     render_help(f, app, main_chunks[2]);
@@ -86,6 +87,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     if app.show_help_modal {
         render_help_modal(f, app, size);
+    }
+
+    if matches!(app.app_mode, AppMode::RemotePicker) {
+        render_remote_picker(f, app, size);
     }
 }
 
@@ -105,6 +110,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         }
         AppMode::Rebase => "REBASE",
         AppMode::Log => "LOG",
+        AppMode::RemotePicker => "SYNC",
     };
     let file_count = app.file_names.len();
     let current = if file_count > 0 {
@@ -804,6 +810,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("u", "Toggle unified / side-by-side"),
             row("t", "Toggle dark / light theme"),
             row("r", "Enter rebase mode"),
+            row("s", "Sync (pull --rebase, then push)"),
             row("L", "Open commit log"),
             sep(inner_width),
             empty(),
@@ -816,6 +823,73 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
 
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text).style(Style::default().bg(t.bg_modal));
+    f.render_widget(paragraph, inner);
+}
+
+fn render_remote_picker(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+
+    let modal_width = 48u16;
+    let line_count = app.remotes.len().max(1) as u16;
+    let modal_height = (line_count + 6).min(area.height); // borders + title + footer + padding
+    let modal_area = centered_rect(modal_width, modal_height, area);
+
+    let dim_bg = Block::default().style(Style::default().bg(t.bg_modal_dim));
+    f.render_widget(dim_bg, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_modal))
+        .style(Style::default().bg(t.bg_modal))
+        .title(Span::styled(
+            " Choose remote to push to ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(" j/k ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" navigate  ", Style::default().fg(t.fg_dim)),
+            Span::styled(" Enter ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" confirm  ", Style::default().fg(t.fg_dim)),
+            Span::styled(" Esc ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" cancel ", Style::default().fg(t.fg_dim)),
+        ]));
+
+    f.render_widget(Clear, modal_area);
+    f.render_widget(&block, modal_area);
+
+    let inner = block.inner(modal_area);
+
+    let lines: Vec<Line<'static>> = if app.remotes.is_empty() {
+        vec![Line::from(Span::styled(
+            "  (no remotes)".to_string(),
+            Style::default().fg(t.fg_dim),
+        ))]
+    } else {
+        app.remotes
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let selected = i == app.current_remote_idx;
+                let style = if selected {
+                    Style::default()
+                        .fg(t.fg_bright)
+                        .bg(t.bg_key_badge)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.fg_normal)
+                };
+                let marker = if selected { " \u{25b6} " } else { "   " };
+                Line::from(vec![
+                    Span::styled(marker.to_string(), style),
+                    Span::styled(name.clone(), style),
+                ])
+            })
+            .collect()
+    };
+
+    let paragraph = Paragraph::new(Text::from(lines)).style(Style::default().bg(t.bg_modal));
     f.render_widget(paragraph, inner);
 }
 
@@ -872,6 +946,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("u", "View"),
             ("t", "Theme"),
             ("r", "Rebase"),
+            ("s", "Sync"),
             ("L", "Log"),
             ("?", "Help"),
         ],
@@ -890,6 +965,11 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("Enter", "Open"),
             ("L", "Close"),
             ("?", "Help"),
+        ],
+        AppMode::RemotePicker => &[
+            ("j/k", "Navigate"),
+            ("Enter", "Confirm"),
+            ("Esc", "Cancel"),
         ],
     };
 

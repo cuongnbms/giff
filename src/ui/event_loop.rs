@@ -9,6 +9,21 @@ use super::rebase::prepare_rebase_changes;
 use super::render::ui;
 use super::types::*;
 
+#[derive(Debug, PartialEq)]
+enum PushDecision {
+    NoRemotes,
+    Single(String),
+    NeedsPicker(Vec<String>),
+}
+
+fn decide_push_target(mut remotes: Vec<String>) -> PushDecision {
+    match remotes.len() {
+        0 => PushDecision::NoRemotes,
+        1 => PushDecision::Single(remotes.remove(0)),
+        _ => PushDecision::NeedsPicker(remotes),
+    }
+}
+
 fn commit_rebase_changes(app: &mut App) {
     let mut any_applied = false;
     let mut errors = Vec::new();
@@ -82,7 +97,7 @@ fn set_change_state(app: &mut App, state: ChangeState) {
 fn reload_diff(app: &mut App) {
     // Don't reload while the user is mid-rebase or browsing the commit log;
     // either would invalidate the user's current selection state.
-    if matches!(app.app_mode, AppMode::Rebase | AppMode::Log) {
+    if matches!(app.app_mode, AppMode::Rebase | AppMode::Log | AppMode::RemotePicker) {
         return;
     }
 
@@ -147,6 +162,133 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
     app.current_file_idx = 0;
     app.diff_source = source;
     Ok(())
+}
+
+fn perform_sync(app: &mut App) {
+    match diff::has_uncommitted_changes() {
+        Ok(true) => {
+            app.status_message = Some("Cannot sync: uncommitted changes".to_string());
+            return;
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Sync failed: {}", e));
+            return;
+        }
+        Ok(false) => {}
+    }
+
+    match diff::get_upstream_branch() {
+        Ok(Some(upstream)) => sync_with_upstream(app, &upstream),
+        Ok(None) => sync_without_upstream(app),
+        Err(e) => {
+            app.status_message = Some(format!("Sync failed: {}", e));
+        }
+    }
+}
+
+fn sync_with_upstream(app: &mut App, upstream: &str) {
+    if let Err(e) = diff::pull_rebase() {
+        app.status_message = Some(format!("Pull failed: {}", e));
+        return;
+    }
+    if let Err(e) = diff::push() {
+        app.status_message = Some(format!("Push failed: {}", e));
+        return;
+    }
+    app.status_message = Some(format!("Synced with {}", upstream));
+    reload_diff(app);
+}
+
+fn sync_without_upstream(app: &mut App) {
+    let remotes = match diff::list_remotes() {
+        Ok(r) => r,
+        Err(e) => {
+            app.status_message = Some(format!("Sync failed: {}", e));
+            return;
+        }
+    };
+
+    let branch = match diff::current_branch() {
+        Ok(b) => b,
+        Err(e) => {
+            app.status_message = Some(format!("Sync failed: {}", e));
+            return;
+        }
+    };
+
+    match decide_push_target(remotes) {
+        PushDecision::NoRemotes => {
+            app.status_message = Some("No remotes configured".to_string());
+        }
+        PushDecision::Single(remote) => {
+            push_to_remote(app, &remote, &branch);
+        }
+        PushDecision::NeedsPicker(list) => {
+            app.remotes = list;
+            app.current_remote_idx = 0;
+            app.app_mode = AppMode::RemotePicker;
+        }
+    }
+}
+
+fn push_to_remote(app: &mut App, remote: &str, branch: &str) {
+    match diff::push_set_upstream(remote, branch) {
+        Ok(()) => {
+            app.status_message = Some(format!(
+                "Pushed {} \u{2192} {}/{}",
+                branch, remote, branch
+            ));
+            reload_diff(app);
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Push failed: {}", e));
+        }
+    }
+}
+
+fn picker_navigate(app: &mut App, forward: bool) {
+    if app.remotes.is_empty() {
+        return;
+    }
+    let last = app.remotes.len() - 1;
+    if forward {
+        if app.current_remote_idx < last {
+            app.current_remote_idx += 1;
+        }
+    } else {
+        app.current_remote_idx = app.current_remote_idx.saturating_sub(1);
+    }
+}
+
+fn picker_confirm(app: &mut App) {
+    let branch = match diff::current_branch() {
+        Ok(b) => b,
+        Err(e) => {
+            app.status_message = Some(format!("Sync failed: {}", e));
+            picker_close(app);
+            return;
+        }
+    };
+    let remote = match app.remotes.get(app.current_remote_idx) {
+        Some(r) => r.clone(),
+        None => {
+            picker_close(app);
+            return;
+        }
+    };
+    picker_close(app);
+    push_to_remote(app, &remote, &branch);
+}
+
+fn picker_cancel(app: &mut App) {
+    picker_close(app);
+    app.status_message = Some("Sync cancelled".to_string());
+}
+
+fn picker_close(app: &mut App) {
+    app.remotes.clear();
+    app.current_remote_idx = 0;
+    app.app_mode = AppMode::Diff;
 }
 
 fn enter_log_mode(app: &mut App) {
@@ -358,22 +500,31 @@ where
                                 AppMode::Log => {
                                     exit_log_mode(&mut app);
                                 }
+                                AppMode::RemotePicker => {
+                                    picker_cancel(&mut app);
+                                }
                             }
                         }
                         KeyCode::Char('L') => match app.app_mode {
                             AppMode::Diff => enter_log_mode(&mut app),
                             AppMode::Log => exit_log_mode(&mut app),
                             AppMode::Rebase => {}
+                            AppMode::RemotePicker => {}
                         },
-                        KeyCode::Enter => {
-                            if let AppMode::Log = app.app_mode {
-                                open_selected_commit(&mut app);
-                            }
-                        }
+                        KeyCode::Enter => match app.app_mode {
+                            AppMode::Log => open_selected_commit(&mut app),
+                            AppMode::RemotePicker => picker_confirm(&mut app),
+                            _ => {}
+                        },
                         KeyCode::Char('r') => {
                             if let AppMode::Diff = app.app_mode {
                                 app.app_mode = AppMode::Rebase;
                                 prepare_rebase_changes(&mut app);
+                            }
+                        }
+                        KeyCode::Char('s') => {
+                            if let AppMode::Diff = app.app_mode {
+                                perform_sync(&mut app);
                             }
                         }
                         KeyCode::Char('a') => {
@@ -421,6 +572,7 @@ where
                                     app.current_commit_idx += 1;
                                 }
                             }
+                            AppMode::RemotePicker => picker_navigate(&mut app, true),
                         },
                         KeyCode::Char('k') | KeyCode::Up => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -448,6 +600,7 @@ where
                                     app.current_commit_idx -= 1;
                                 }
                             }
+                            AppMode::RemotePicker => picker_navigate(&mut app, false),
                         },
                         KeyCode::PageDown => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -486,6 +639,7 @@ where
                                         .min(app.commits.len() - 1);
                                 }
                             }
+                            AppMode::RemotePicker => {}
                         },
                         KeyCode::PageUp => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -514,6 +668,7 @@ where
                                 app.current_commit_idx =
                                     app.current_commit_idx.saturating_sub(page);
                             }
+                            AppMode::RemotePicker => {}
                         },
                         KeyCode::Home => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -532,6 +687,7 @@ where
                             AppMode::Log => {
                                 app.current_commit_idx = 0;
                             }
+                            AppMode::RemotePicker => {}
                         },
                         KeyCode::End => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
@@ -557,6 +713,7 @@ where
                                 app.current_commit_idx =
                                     app.commits.len().saturating_sub(1);
                             }
+                            AppMode::RemotePicker => {}
                         },
                         KeyCode::Tab => {
                             // Toggle between file list and diff content (only in diff mode)
@@ -679,6 +836,7 @@ where
                                         }
                                     }
                                 }
+                                AppMode::RemotePicker => {}
                             }
                         }
                         _ => {}
@@ -739,6 +897,8 @@ mod tests {
             commits: Vec::new(),
             current_commit_idx: 0,
             log_return_source: None,
+            remotes: Vec::new(),
+            current_remote_idx: 0,
         }
     }
 
@@ -805,5 +965,73 @@ mod tests {
         navigate_rebase_file(&mut app, true);
         assert_eq!(app.current_file_idx, 1);
         assert_eq!(app.current_change_idx, 0);
+    }
+
+    #[test]
+    fn decide_push_target_no_remotes() {
+        assert_eq!(decide_push_target(Vec::new()), PushDecision::NoRemotes);
+    }
+
+    #[test]
+    fn decide_push_target_single_remote() {
+        assert_eq!(
+            decide_push_target(vec!["origin".to_string()]),
+            PushDecision::Single("origin".to_string())
+        );
+    }
+
+    #[test]
+    fn decide_push_target_multiple_remotes() {
+        let remotes = vec!["origin".to_string(), "upstream".to_string()];
+        assert_eq!(
+            decide_push_target(remotes.clone()),
+            PushDecision::NeedsPicker(remotes)
+        );
+    }
+
+    fn make_picker_app(remotes: Vec<&str>) -> App {
+        let mut app = make_app(vec![], vec![]);
+        app.app_mode = AppMode::RemotePicker;
+        app.remotes = remotes.into_iter().map(|s| s.to_string()).collect();
+        app.current_remote_idx = 0;
+        app
+    }
+
+    #[test]
+    fn picker_j_advances_within_bounds() {
+        let mut app = make_picker_app(vec!["origin", "upstream"]);
+        picker_navigate(&mut app, true);
+        assert_eq!(app.current_remote_idx, 1);
+    }
+
+    #[test]
+    fn picker_j_clamps_at_last_index() {
+        let mut app = make_picker_app(vec!["origin", "upstream"]);
+        app.current_remote_idx = 1;
+        picker_navigate(&mut app, true);
+        assert_eq!(app.current_remote_idx, 1);
+    }
+
+    #[test]
+    fn picker_k_decreases() {
+        let mut app = make_picker_app(vec!["origin", "upstream"]);
+        app.current_remote_idx = 1;
+        picker_navigate(&mut app, false);
+        assert_eq!(app.current_remote_idx, 0);
+    }
+
+    #[test]
+    fn picker_k_clamps_at_zero() {
+        let mut app = make_picker_app(vec!["origin", "upstream"]);
+        app.current_remote_idx = 0;
+        picker_navigate(&mut app, false);
+        assert_eq!(app.current_remote_idx, 0);
+    }
+
+    #[test]
+    fn picker_navigate_handles_empty_list() {
+        let mut app = make_picker_app(vec![]);
+        picker_navigate(&mut app, true);
+        assert_eq!(app.current_remote_idx, 0);
     }
 }

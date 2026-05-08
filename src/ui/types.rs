@@ -7,6 +7,7 @@ pub enum AppMode {
     Diff,
     Rebase,
     Log,
+    RemotePicker,
 }
 
 #[derive(Clone, PartialEq)]
@@ -56,6 +57,9 @@ pub struct App {
     /// The diff source to restore when leaving Log mode (Esc/q).
     /// Set when first entering Log mode; cleared when leaving.
     pub log_return_source: Option<DiffSource>,
+    /// Configured remotes shown in the picker. Empty unless `app_mode == RemotePicker`.
+    pub remotes: Vec<String>,
+    pub current_remote_idx: usize,
 }
 
 pub enum Pane {

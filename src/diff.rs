@@ -374,6 +374,39 @@ pub fn git_repo_root() -> Result<String, Box<dyn Error>> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Return the current branch name (e.g. "main"). Errors when HEAD is
+/// detached or git is otherwise unavailable.
+pub fn current_branch() -> Result<String, Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to resolve current branch: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Return all configured remote names, in the order `git remote` reports.
+pub fn list_remotes() -> Result<Vec<String>, Box<dyn Error>> {
+    let output = Command::new("git").args(["remote"]).output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to list remotes: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect())
+}
+
 pub fn has_uncommitted_changes() -> Result<bool, Box<dyn Error>> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])
@@ -510,17 +543,10 @@ pub fn check_rebase_needed() -> Result<Option<String>, Box<dyn Error>> {
     }
 
     // Get current branch name
-    let branch_output = Command::new("git")
-        .args(["symbolic-ref", "--short", "HEAD"])
-        .output()?;
-
-    if !branch_output.status.success() {
-        return Ok(None);
-    }
-
-    let current_branch = String::from_utf8_lossy(&branch_output.stdout)
-        .trim()
-        .to_string();
+    let current_branch = match current_branch() {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
 
     // Check if branch has an upstream and get its name
     let upstream_output = match Command::new("git")
@@ -579,6 +605,46 @@ pub fn perform_rebase(upstream: &str) -> Result<bool, Box<dyn Error>> {
     }
 
     Ok(true)
+}
+
+/// Run `git pull --rebase`. On failure, defensively run `git rebase --abort`
+/// so the repo is left in a clean state, then return the captured stderr.
+pub fn pull_rebase() -> Result<(), Box<dyn Error>> {
+    let output = Command::new("git").args(["pull", "--rebase"]).output()?;
+    if !output.status.success() {
+        let _ = Command::new("git").args(["rebase", "--abort"]).output();
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+/// Run `git push` for the current branch's configured upstream.
+pub fn push() -> Result<(), Box<dyn Error>> {
+    let output = Command::new("git").args(["push"]).output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+/// Run `git push -u <remote> <branch>` to publish a branch and set its upstream.
+pub fn push_set_upstream(remote: &str, branch: &str) -> Result<(), Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["push", "-u", remote, branch])
+        .output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

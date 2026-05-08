@@ -79,6 +79,7 @@ giff --auto-rebase          # auto-rebase if behind upstream
 | `u` | Toggle unified / side-by-side view |
 | `t` | Toggle dark / light theme |
 | `r` | Enter rebase mode |
+| `s` | Sync (pull --rebase, then push) |
 | `?` | Show help |
 | `q` / `Esc` | Quit |
 

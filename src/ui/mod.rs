@@ -103,6 +103,8 @@ pub fn run_app(
         commits: Vec::new(),
         current_commit_idx: 0,
         log_return_source: None,
+        remotes: Vec::new(),
+        current_remote_idx: 0,
     };
 
     // Watch the working tree for changes so we can auto-reload the diff.
