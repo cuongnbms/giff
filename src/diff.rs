@@ -49,12 +49,56 @@ pub fn get_changes_with_args(args: &str) -> Result<(FileChanges, String, String)
 
 // Compare uncommitted changes (git diff)
 pub fn get_uncommitted_changes() -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let diff_output = get_diff_output_with_args(&[])?;
+    let mut diff_output = get_diff_output_with_args(&[])?;
+
+    // `git diff` omits untracked files. Synthesize a diff against /dev/null
+    // for each so newly added files render alongside modifications.
+    if let Ok(repo_root) = git_repo_root() {
+        for file in list_untracked_files(&repo_root) {
+            if let Some(extra) = diff_untracked_file(&repo_root, &file) {
+                diff_output.push_str(&extra);
+            }
+        }
+    }
+
     Ok((
         parse_diff_output(&diff_output)?,
         "HEAD".to_string(),
         "Working Tree".to_string(),
     ))
+}
+
+fn list_untracked_files(repo_root: &str) -> Vec<String> {
+    let output = match Command::new("git")
+        .current_dir(repo_root)
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn diff_untracked_file(repo_root: &str, file: &str) -> Option<String> {
+    // `git diff --no-index` exits with code 1 when files differ; ignore status.
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args([
+            "diff",
+            "--no-color",
+            "--no-index",
+            "--",
+            "/dev/null",
+            file,
+        ])
+        .output()
+        .ok()?;
+    Some(String::from_utf8(output.stdout).unwrap_or_default())
 }
 
 // Compare a specific reference to working tree (git diff <ref>)
