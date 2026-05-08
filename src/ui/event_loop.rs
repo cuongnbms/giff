@@ -164,7 +164,25 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
     Ok(())
 }
 
-fn perform_sync(app: &mut App) {
+/// Set a transient status message and immediately repaint so the user sees
+/// progress before the next blocking git command runs on this thread.
+fn flash_status<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    msg: impl Into<String>,
+) where
+    std::io::Error: From<B::Error>,
+{
+    app.status_message = Some(msg.into());
+    let _ = terminal.draw(|f| super::render::ui(f, app));
+}
+
+fn perform_sync<B: Backend>(terminal: &mut Terminal<B>, app: &mut App)
+where
+    std::io::Error: From<B::Error>,
+{
+    flash_status(terminal, app, "Syncing\u{2026}");
+
     match diff::has_uncommitted_changes() {
         Ok(true) => {
             app.status_message = Some("Cannot sync: uncommitted changes".to_string());
@@ -178,19 +196,24 @@ fn perform_sync(app: &mut App) {
     }
 
     match diff::get_upstream_branch() {
-        Ok(Some(upstream)) => sync_with_upstream(app, &upstream),
-        Ok(None) => sync_without_upstream(app),
+        Ok(Some(upstream)) => sync_with_upstream(terminal, app, &upstream),
+        Ok(None) => sync_without_upstream(terminal, app),
         Err(e) => {
             app.status_message = Some(format!("Sync failed: {}", e));
         }
     }
 }
 
-fn sync_with_upstream(app: &mut App, upstream: &str) {
+fn sync_with_upstream<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, upstream: &str)
+where
+    std::io::Error: From<B::Error>,
+{
+    flash_status(terminal, app, format!("Pulling from {}\u{2026}", upstream));
     if let Err(e) = diff::pull_rebase() {
         app.status_message = Some(format!("Pull failed: {}", e));
         return;
     }
+    flash_status(terminal, app, format!("Pushing to {}\u{2026}", upstream));
     if let Err(e) = diff::push() {
         app.status_message = Some(format!("Push failed: {}", e));
         return;
@@ -199,7 +222,10 @@ fn sync_with_upstream(app: &mut App, upstream: &str) {
     reload_diff(app);
 }
 
-fn sync_without_upstream(app: &mut App) {
+fn sync_without_upstream<B: Backend>(terminal: &mut Terminal<B>, app: &mut App)
+where
+    std::io::Error: From<B::Error>,
+{
     let remotes = match diff::list_remotes() {
         Ok(r) => r,
         Err(e) => {
@@ -221,7 +247,7 @@ fn sync_without_upstream(app: &mut App) {
             app.status_message = Some("No remotes configured".to_string());
         }
         PushDecision::Single(remote) => {
-            push_to_remote(app, &remote, &branch);
+            push_to_remote(terminal, app, &remote, &branch);
         }
         PushDecision::NeedsPicker(list) => {
             app.remotes = list;
@@ -231,7 +257,19 @@ fn sync_without_upstream(app: &mut App) {
     }
 }
 
-fn push_to_remote(app: &mut App, remote: &str, branch: &str) {
+fn push_to_remote<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    remote: &str,
+    branch: &str,
+) where
+    std::io::Error: From<B::Error>,
+{
+    flash_status(
+        terminal,
+        app,
+        format!("Pushing {} \u{2192} {}/{}\u{2026}", branch, remote, branch),
+    );
     match diff::push_set_upstream(remote, branch) {
         Ok(()) => {
             app.status_message = Some(format!(
@@ -260,7 +298,10 @@ fn picker_navigate(app: &mut App, forward: bool) {
     }
 }
 
-fn picker_confirm(app: &mut App) {
+fn picker_confirm<B: Backend>(terminal: &mut Terminal<B>, app: &mut App)
+where
+    std::io::Error: From<B::Error>,
+{
     let branch = match diff::current_branch() {
         Ok(b) => b,
         Err(e) => {
@@ -277,7 +318,7 @@ fn picker_confirm(app: &mut App) {
         }
     };
     picker_close(app);
-    push_to_remote(app, &remote, &branch);
+    push_to_remote(terminal, app, &remote, &branch);
 }
 
 fn picker_cancel(app: &mut App) {
@@ -513,7 +554,7 @@ where
                         },
                         KeyCode::Enter => match app.app_mode {
                             AppMode::Log => open_selected_commit(&mut app),
-                            AppMode::RemotePicker => picker_confirm(&mut app),
+                            AppMode::RemotePicker => picker_confirm(terminal, &mut app),
                             _ => {}
                         },
                         KeyCode::Char('r') => {
@@ -524,7 +565,7 @@ where
                         }
                         KeyCode::Char('s') => {
                             if let AppMode::Diff = app.app_mode {
-                                perform_sync(&mut app);
+                                perform_sync(terminal, &mut app);
                             }
                         }
                         KeyCode::Char('a') => {

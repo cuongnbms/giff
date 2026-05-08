@@ -925,18 +925,6 @@ fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
 
 fn render_help(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
-    if let Some(msg) = &app.status_message {
-        let is_error = msg.starts_with("Error");
-        let color = if is_error { t.fg_removed } else { t.fg_added };
-        let help = Paragraph::new(Line::from(Span::styled(
-            format!(" {}", msg),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )))
-        .style(Style::default().bg(t.bg_header));
-        f.render_widget(help, area);
-        return;
-    }
-
     let pairs: &[(&str, &str)] = match app.app_mode {
         AppMode::Diff => &[
             ("q", "Quit"),
@@ -990,6 +978,31 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
 
     let help = Paragraph::new(Line::from(spans)).style(Style::default().bg(t.bg_header));
     f.render_widget(help, area);
+
+    // Overlay the transient status message right-aligned on the same line so
+    // the keymap remains visible (e.g. when there are no files to diff).
+    if let Some(msg) = &app.status_message {
+        let is_error = msg.starts_with("Error");
+        let color = if is_error { t.fg_removed } else { t.fg_added };
+        let text = format!("{} ", msg);
+        let width = UnicodeWidthStr::width(text.as_str()) as u16;
+        if width > 0 && area.width > 0 {
+            let w = width.min(area.width);
+            let status_area = Rect {
+                x: area.x + area.width - w,
+                y: area.y,
+                width: w,
+                height: area.height,
+            };
+            let status = Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Right)
+            .style(Style::default().bg(t.bg_header));
+            f.render_widget(status, status_area);
+        }
+    }
 }
 
 fn clamp_scroll(app: &mut App, content_area_height: u16) {
