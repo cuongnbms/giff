@@ -64,11 +64,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let (file_changes, left_label, right_label) = diff_source.fetch()?;
 
-    if file_changes.is_empty() {
-        println!("No changes.");
-        return Ok(());
-    }
-
     // Check if rebase is needed (once, reuse in UI)
     let rebase_notification = diff::check_rebase_needed()?;
 
