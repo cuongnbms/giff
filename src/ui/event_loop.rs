@@ -1,5 +1,5 @@
 use crate::diff::{self, DiffSource};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::{prelude::*, Terminal};
 use std::io;
 use std::sync::mpsc;
@@ -815,6 +815,31 @@ where
                     }
                     let size = terminal.size()?;
                     let scroll_amount: usize = 3;
+                    let file_list_width =
+                        (size.width as u32 * app.file_list_width_pct as u32 / 100) as u16;
+                    if matches!(app.app_mode, AppMode::Diff) {
+                        let on_divider = mouse.row > 0
+                            && mouse.row < size.height.saturating_sub(1)
+                            && (mouse.column as i32 - file_list_width as i32).abs() <= 1;
+                        match mouse.kind {
+                            MouseEventKind::Down(MouseButton::Left) if on_divider => {
+                                app.resizing_divider = true;
+                                continue;
+                            }
+                            MouseEventKind::Drag(MouseButton::Left)
+                                if app.resizing_divider && size.width > 0 =>
+                            {
+                                let raw = mouse.column as u32 * 100 / size.width as u32;
+                                app.file_list_width_pct = (raw as u16).clamp(10, 60);
+                                continue;
+                            }
+                            MouseEventKind::Up(MouseButton::Left) if app.resizing_divider => {
+                                app.resizing_divider = false;
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
                     match mouse.kind {
                         MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                             if mouse.row == 0 || mouse.row >= size.height.saturating_sub(1) {
@@ -823,7 +848,6 @@ where
                             let is_down = matches!(mouse.kind, MouseEventKind::ScrollDown);
                             match app.app_mode {
                                 AppMode::Diff => {
-                                    let file_list_width = size.width / 5;
                                     if mouse.column < file_list_width {
                                         if !app.file_names.is_empty() {
                                             if is_down {
@@ -942,6 +966,8 @@ mod tests {
             remotes: Vec::new(),
             current_remote_idx: 0,
             branch_status: None,
+            file_list_width_pct: 20,
+            resizing_divider: false,
         }
     }
 

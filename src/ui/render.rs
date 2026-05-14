@@ -44,12 +44,16 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     match app.app_mode {
         AppMode::Diff => match app.view_mode {
             ViewMode::SideBySide => {
+                let pct = app.file_list_width_pct;
+                let rest = 100u16.saturating_sub(pct);
+                let left = rest / 2;
+                let right = rest - left;
                 let content_chunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
-                        Constraint::Percentage(20),
-                        Constraint::Percentage(40),
-                        Constraint::Percentage(40),
+                        Constraint::Percentage(pct),
+                        Constraint::Percentage(left),
+                        Constraint::Percentage(right),
                     ])
                     .split(main_chunks[1]);
 
@@ -59,9 +63,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 }
             }
             ViewMode::Unified => {
+                let pct = app.file_list_width_pct;
                 let content_chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
+                    .constraints([
+                        Constraint::Percentage(pct),
+                        Constraint::Percentage(100u16.saturating_sub(pct)),
+                    ])
                     .split(main_chunks[1]);
 
                 render_file_list(f, app, content_chunks[0]);

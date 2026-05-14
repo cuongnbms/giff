@@ -62,6 +62,11 @@ pub struct App {
     pub current_remote_idx: usize,
     /// Current branch + ahead/behind counts shown in the header.
     pub branch_status: Option<BranchStatus>,
+    /// Width of the Files pane as a percentage of the terminal (Diff mode).
+    /// Mutated by dragging the vertical divider with the mouse.
+    pub file_list_width_pct: u16,
+    /// True while the user is mid-drag on the Files/Diff divider.
+    pub resizing_divider: bool,
 }
 
 pub enum Pane {
