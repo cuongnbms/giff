@@ -247,9 +247,17 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
 
             let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
             let max_name_width = inner_width.saturating_sub(stats_width);
-            let display_name = truncate_path(file, max_name_width);
+            let (file_part, dir_part) = split_path_for_display(file);
+            let (file_disp, dir_disp) =
+                fit_file_and_dir(&file_part, &dir_part, max_name_width);
 
-            let mut spans = vec![Span::styled(display_name, name_style)];
+            let mut spans = vec![Span::styled(file_disp, name_style)];
+            if !dir_disp.is_empty() {
+                spans.push(Span::styled(
+                    format!("  {}", dir_disp),
+                    Style::default().fg(t.fg_dim),
+                ));
+            }
             spans.extend(stat_spans);
 
             ListItem::new(Line::from(spans))
@@ -1095,9 +1103,58 @@ fn build_file_stats<'a>(adds: usize, dels: usize, theme: &Theme) -> (Vec<Span<'a
     (spans, width)
 }
 
+/// Split a path into (filename, directory). Directory is "" for root-level
+/// files. Uses '/' as the separator since git diff output is POSIX-style.
+fn split_path_for_display(path: &str) -> (String, String) {
+    match path.rsplit_once('/') {
+        Some((dir, name)) => (name.to_string(), dir.to_string()),
+        None => (path.to_string(), String::new()),
+    }
+}
+
+/// Fit a (filename, directory) pair into `max_width` display columns,
+/// VSCode-style: filename always visible, directory shown dimly after two
+/// spaces, truncated from the left with `…` if the remainder is too small.
+/// If the filename alone is wider than `max_width`, truncate the filename from
+/// the right with `…` and drop the directory.
+fn fit_file_and_dir(file: &str, dir: &str, max_width: usize) -> (String, String) {
+    let file_w = UnicodeWidthStr::width(file);
+    if file_w >= max_width {
+        return (truncate_tail(file, max_width), String::new());
+    }
+    if dir.is_empty() {
+        return (file.to_string(), String::new());
+    }
+    // 2 spaces between filename and directory
+    let dir_budget = max_width - file_w - 2;
+    if dir_budget == 0 {
+        return (file.to_string(), String::new());
+    }
+    let dir_w = UnicodeWidthStr::width(dir);
+    if dir_w <= dir_budget {
+        return (file.to_string(), dir.to_string());
+    }
+    if dir_budget == 1 {
+        return (file.to_string(), "\u{2026}".to_string());
+    }
+    let target = dir_budget - 1;
+    let mut width = 0;
+    let mut start_byte = dir.len();
+    for (idx, ch) in dir.char_indices().rev() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > target {
+            break;
+        }
+        width += ch_width;
+        start_byte = idx;
+    }
+    (file.to_string(), format!("\u{2026}{}", &dir[start_byte..]))
+}
+
 /// Truncate a path from the left so it fits within `max_width` display columns,
 /// preserving the filename (tail). Uses unicode display widths so East Asian
 /// full-width characters are measured correctly.
+#[allow(dead_code)]
 fn truncate_path(path: &str, max_width: usize) -> String {
     let display_width = UnicodeWidthStr::width(path);
     if display_width <= max_width {
