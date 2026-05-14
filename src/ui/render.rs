@@ -14,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::diff::LineChange;
 
 use super::rebase::render_rebase_ui;
-use super::syntax::highlight_line_changes;
+use super::syntax::highlight_line_changes_split;
 use super::theme::Theme;
 use super::types::*;
 
@@ -302,9 +302,8 @@ fn render_diff_pane(
         Style::default().fg(theme.fg_dim)
     };
 
-    let highlighted = highlight_line_changes(lines, filename, theme);
-    let total_lines = highlighted.len();
-    let content = Text::from(highlighted);
+    let (gutter_lines, content_lines) = highlight_line_changes_split(lines, filename, theme);
+    let total_lines = content_lines.len();
     let visible_height = area.height.saturating_sub(2) as usize;
 
     let title_text = if total_lines > visible_height {
@@ -331,14 +330,39 @@ fn render_diff_pane(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Pin the line-number gutter + change marker (7 cols) so they stay visible
+    // when the user scrolls the code horizontally.
+    const GUTTER_WIDTH: u16 = 7;
+    let gutter_width = GUTTER_WIDTH.min(inner.width);
+    let gutter_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: gutter_width,
+        height: inner.height,
+    };
+    let content_area = Rect {
+        x: inner.x + gutter_width,
+        y: inner.y,
+        width: inner.width.saturating_sub(gutter_width),
+        height: inner.height,
+    };
 
     // ratatui Paragraph::scroll() accepts (u16, u16); clamp for content >65k lines.
     let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
     let h_scroll_u16 = h_scroll.min(u16::MAX as usize) as u16;
-    let paragraph = Paragraph::new(content)
-        .block(block)
-        .scroll((scroll_u16, h_scroll_u16));
-    f.render_widget(paragraph, area);
+
+    let gutter_paragraph =
+        Paragraph::new(Text::from(gutter_lines)).scroll((scroll_u16, 0));
+    f.render_widget(gutter_paragraph, gutter_area);
+
+    if content_area.width > 0 {
+        let content_paragraph =
+            Paragraph::new(Text::from(content_lines)).scroll((scroll_u16, h_scroll_u16));
+        f.render_widget(content_paragraph, content_area);
+    }
 
     // Scrollbar
     if total_lines > visible_height {
@@ -1065,17 +1089,14 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Maximum display width of any rendered diff line for `file`, accounting for
-/// the line-number gutter (5 cols) + change marker (2 cols) prefix that
-/// `highlight_line_changes` prepends.
+/// Maximum display width of the code portion (excluding the pinned gutter) of
+/// any diff line for `file`.
 fn max_line_width(app: &App, file: &str) -> usize {
-    const GUTTER_AND_MARKER: usize = 7;
     let (base, head) = match app.file_changes.get(file) {
         Some(c) => c,
         None => return 0,
     };
-    let widest = base
-        .iter()
+    base.iter()
         .chain(head.iter())
         .filter(|(num, _)| *num != 0)
         .map(|(_, line)| {
@@ -1087,11 +1108,11 @@ fn max_line_width(app: &App, file: &str) -> usize {
             UnicodeWidthStr::width(content)
         })
         .max()
-        .unwrap_or(0);
-    widest + GUTTER_AND_MARKER
+        .unwrap_or(0)
 }
 
 fn clamp_h_scroll(app: &mut App, content_area_width: u16) {
+    const GUTTER_WIDTH: usize = 7;
     let file = match app.file_names.get(app.current_file_idx) {
         Some(f) => f.clone(),
         None => return,
@@ -1103,7 +1124,7 @@ fn clamp_h_scroll(app: &mut App, content_area_width: u16) {
         ViewMode::SideBySide => rest / 2,
         ViewMode::Unified => rest,
     };
-    let inner = pane_width.saturating_sub(2) as usize;
+    let inner = (pane_width.saturating_sub(2) as usize).saturating_sub(GUTTER_WIDTH);
 
     let widest = max_line_width(app, &file);
     let max_h = widest.saturating_sub(inner);
