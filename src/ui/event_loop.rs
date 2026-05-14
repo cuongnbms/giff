@@ -932,6 +932,26 @@ where
                                 AppMode::RemotePicker => {}
                             }
                         }
+                        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                            if mouse.row == 0 || mouse.row >= size.height.saturating_sub(1) {
+                                continue;
+                            }
+                            if !matches!(app.app_mode, AppMode::Diff) {
+                                continue;
+                            }
+                            if mouse.column < file_list_width {
+                                continue;
+                            }
+                            if let Some(file) = app.file_names.get(app.current_file_idx) {
+                                let cur = *app.h_scroll_positions.get(file).unwrap_or(&0);
+                                let next = if matches!(mouse.kind, MouseEventKind::ScrollRight) {
+                                    cur.saturating_add(scroll_amount)
+                                } else {
+                                    cur.saturating_sub(scroll_amount)
+                                };
+                                app.h_scroll_positions.insert(file.clone(), next);
+                            }
+                        }
                         _ => {}
                     }
                 }
