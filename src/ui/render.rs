@@ -39,6 +39,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // Clamp scroll position so it cannot exceed content bounds
     if matches!(app.app_mode, AppMode::Diff) {
         clamp_scroll(app, main_chunks[1].height);
+        clamp_h_scroll(app, main_chunks[1].width);
     }
 
     match app.app_mode {
@@ -283,6 +284,7 @@ fn render_diff_pane(
     lines: &[(usize, String)],
     filename: &str,
     scroll: usize,
+    h_scroll: usize,
     is_focused: bool,
     area: Rect,
     theme: &Theme,
@@ -313,7 +315,13 @@ fn render_diff_pane(
         } else {
             0
         };
-        format!(" {} ({}%) ", title, pct)
+        if h_scroll > 0 {
+            format!(" {} ({}%) \u{2192}{} ", title, pct, h_scroll)
+        } else {
+            format!(" {} ({}%) ", title, pct)
+        }
+    } else if h_scroll > 0 {
+        format!(" {} \u{2192}{} ", title, h_scroll)
     } else {
         format!(" {} ", title)
     };
@@ -326,7 +334,10 @@ fn render_diff_pane(
 
     // ratatui Paragraph::scroll() accepts (u16, u16); clamp for content >65k lines.
     let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
-    let paragraph = Paragraph::new(content).block(block).scroll((scroll_u16, 0));
+    let h_scroll_u16 = h_scroll.min(u16::MAX as usize) as u16;
+    let paragraph = Paragraph::new(content)
+        .block(block)
+        .scroll((scroll_u16, h_scroll_u16));
     f.render_widget(paragraph, area);
 
     // Scrollbar
@@ -483,6 +494,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         None => return,
     };
     let scroll = *app.scroll_positions.get(current_file).unwrap_or(&0);
+    let h_scroll = *app.h_scroll_positions.get(current_file).unwrap_or(&0);
     let is_focused = matches!(app.focused_pane, Pane::DiffContent);
 
     let (aligned_base, aligned_head) = align_lines(base_lines, head_lines);
@@ -493,6 +505,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         &aligned_base,
         current_file,
         scroll,
+        h_scroll,
         is_focused,
         base_area,
         &app.theme,
@@ -503,6 +516,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         &aligned_head,
         current_file,
         scroll,
+        h_scroll,
         is_focused,
         head_area,
         &app.theme,
@@ -561,6 +575,7 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
     let scroll = *app.scroll_positions.get(current_file).unwrap_or(&0);
+    let h_scroll = *app.h_scroll_positions.get(current_file).unwrap_or(&0);
     let is_focused = matches!(app.focused_pane, Pane::DiffContent);
 
     let unified_lines = build_unified_lines(base_lines, head_lines);
@@ -572,6 +587,7 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         &unified_lines,
         current_file,
         scroll,
+        h_scroll,
         is_focused,
         area,
         &app.theme,
@@ -731,7 +747,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
     let is_log = matches!(app.app_mode, AppMode::Log);
 
     let modal_width = 56u16;
-    let modal_height = 29u16;
+    let modal_height = 30u16;
     let modal_area = centered_rect(modal_width, modal_height, area);
 
     // Dim the background behind the modal
@@ -850,6 +866,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("Tab", "Toggle focus (files / diff)"),
             row("h / \u{2190}", "Focus file list"),
             row("l / \u{2192}", "Focus diff content"),
+            row("S-\u{2190}/\u{2192}", "Scroll diff horizontally"),
             row("u", "Toggle unified / side-by-side"),
             row("t", "Toggle dark / light theme"),
             row("r", "Enter rebase mode"),
@@ -1045,6 +1062,54 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().bg(t.bg_header));
             f.render_widget(status, status_area);
         }
+    }
+}
+
+/// Maximum display width of any rendered diff line for `file`, accounting for
+/// the line-number gutter (5 cols) + change marker (2 cols) prefix that
+/// `highlight_line_changes` prepends.
+fn max_line_width(app: &App, file: &str) -> usize {
+    const GUTTER_AND_MARKER: usize = 7;
+    let (base, head) = match app.file_changes.get(file) {
+        Some(c) => c,
+        None => return 0,
+    };
+    let widest = base
+        .iter()
+        .chain(head.iter())
+        .filter(|(num, _)| *num != 0)
+        .map(|(_, line)| {
+            let content = line
+                .strip_prefix('+')
+                .or_else(|| line.strip_prefix('-'))
+                .or_else(|| line.strip_prefix(' '))
+                .unwrap_or(line);
+            UnicodeWidthStr::width(content)
+        })
+        .max()
+        .unwrap_or(0);
+    widest + GUTTER_AND_MARKER
+}
+
+fn clamp_h_scroll(app: &mut App, content_area_width: u16) {
+    let file = match app.file_names.get(app.current_file_idx) {
+        Some(f) => f.clone(),
+        None => return,
+    };
+
+    let rest = content_area_width
+        .saturating_sub((content_area_width as u32 * app.file_list_width_pct as u32 / 100) as u16);
+    let pane_width = match app.view_mode {
+        ViewMode::SideBySide => rest / 2,
+        ViewMode::Unified => rest,
+    };
+    let inner = pane_width.saturating_sub(2) as usize;
+
+    let widest = max_line_width(app, &file);
+    let max_h = widest.saturating_sub(inner);
+    let cur = app.h_scroll_positions.get(&file).copied().unwrap_or(0);
+    if cur > max_h {
+        app.h_scroll_positions.insert(file, max_h);
     }
 }
 

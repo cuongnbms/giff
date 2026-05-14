@@ -1,5 +1,7 @@
 use crate::diff::{self, DiffSource};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use ratatui::{prelude::*, Terminal};
 use std::io;
 use std::sync::mpsc;
@@ -124,8 +126,11 @@ fn reload_diff(app: &mut App) {
     // Drop scroll positions for files that no longer exist; keep the rest.
     app.scroll_positions
         .retain(|name, _| new_changes.contains_key(name));
+    app.h_scroll_positions
+        .retain(|name, _| new_changes.contains_key(name));
     for name in &new_names {
         app.scroll_positions.entry(name.clone()).or_insert(0);
+        app.h_scroll_positions.entry(name.clone()).or_insert(0);
     }
 
     app.current_file_idx = match prev_selected {
@@ -153,8 +158,10 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
     names.sort();
 
     app.scroll_positions.clear();
+    app.h_scroll_positions.clear();
     for n in &names {
         app.scroll_positions.insert(n.clone(), 0);
+        app.h_scroll_positions.insert(n.clone(), 0);
     }
     app.file_changes = changes;
     app.file_names = names;
@@ -522,6 +529,26 @@ where
                         }
                         continue; // Skip other key processing when modal is shown
                     }
+
+                    // Shift+Left / Shift+Right scroll the diff pane horizontally
+                    // so long lines that overflow the pane can be inspected.
+                    if matches!(app.app_mode, AppMode::Diff)
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                        && matches!(key.code, KeyCode::Left | KeyCode::Right)
+                    {
+                        const H_STEP: usize = 5;
+                        if let Some(file) = app.file_names.get(app.current_file_idx) {
+                            let cur = *app.h_scroll_positions.get(file).unwrap_or(&0);
+                            let next = if matches!(key.code, KeyCode::Right) {
+                                cur.saturating_add(H_STEP)
+                            } else {
+                                cur.saturating_sub(H_STEP)
+                            };
+                            app.h_scroll_positions.insert(file.clone(), next);
+                        }
+                        continue;
+                    }
+
                     match key.code {
                         KeyCode::Char('q') | KeyCode::Esc => {
                             match app.app_mode {
@@ -947,6 +974,7 @@ mod tests {
             current_file_idx: 0,
             file_names,
             scroll_positions: HashMap::new(),
+            h_scroll_positions: HashMap::new(),
             focused_pane: Pane::FileList,
             view_mode: ViewMode::SideBySide,
             app_mode: AppMode::Rebase,

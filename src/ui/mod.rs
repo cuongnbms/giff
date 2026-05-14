@@ -65,8 +65,10 @@ pub fn run_app(
     file_names.sort();
 
     let mut scroll_positions = HashMap::new();
+    let mut h_scroll_positions = HashMap::new();
     for name in &file_names {
         scroll_positions.insert(name.clone(), 0usize);
+        h_scroll_positions.insert(name.clone(), 0usize);
     }
 
     // Build theme cycle: [initial, dark, light] with dedup
@@ -87,6 +89,7 @@ pub fn run_app(
         current_file_idx: 0,
         file_names,
         scroll_positions,
+        h_scroll_positions,
         focused_pane: Pane::FileList,
         view_mode: ViewMode::SideBySide,
         app_mode: AppMode::Diff,
