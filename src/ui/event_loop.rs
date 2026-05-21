@@ -1153,6 +1153,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn full_file_context_off_returns_none() {
+        assert_eq!(full_file_context(false), None);
+    }
+
+    #[test]
+    fn full_file_context_on_returns_huge_context() {
+        assert_eq!(full_file_context(true), Some(usize::MAX / 2));
+    }
+
     fn make_picker_app(remotes: Vec<&str>) -> App {
         let mut app = make_app(vec![], vec![]);
         app.app_mode = AppMode::RemotePicker;
