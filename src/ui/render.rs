@@ -101,6 +101,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     if matches!(app.app_mode, AppMode::RemotePicker) {
         render_remote_picker(f, app, size);
     }
+
+    if app.show_commit_modal {
+        render_commit_modal(f, app, size);
+    }
 }
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
@@ -897,6 +901,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("u", "Toggle unified / side-by-side"),
             row("f", "Toggle full file / hunks view"),
             row("t", "Toggle dark / light theme"),
+            row("c", "Commit (AI-generated message)"),
             row("r", "Enter rebase mode"),
             row("s", "Sync (pull --rebase, then push)"),
             row("L", "Open commit log"),
@@ -911,6 +916,66 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
 
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text).style(Style::default().bg(t.bg_modal));
+    f.render_widget(paragraph, inner);
+}
+
+fn render_commit_modal(f: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let message = match &app.pending_commit_message {
+        Some(m) => m.as_str(),
+        None => return,
+    };
+
+    let modal_width = 78u16.min(area.width.saturating_sub(2));
+    let lines: Vec<&str> = message.lines().collect();
+    let line_count = lines.len().max(1) as u16;
+    let modal_height = (line_count + 6).clamp(8, area.height.saturating_sub(2).max(8));
+    let modal_area = centered_rect(modal_width, modal_height, area);
+
+    let dim_bg = Block::default().style(Style::default().bg(t.bg_modal_dim));
+    f.render_widget(dim_bg, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_modal))
+        .style(Style::default().bg(t.bg_modal))
+        .title(Span::styled(
+            " Commit message ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(" Enter ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" commit  ", Style::default().fg(t.fg_dim)),
+            Span::styled(" Esc ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" cancel ", Style::default().fg(t.fg_dim)),
+        ]));
+
+    f.render_widget(Clear, modal_area);
+    f.render_widget(&block, modal_area);
+
+    let inner = block.inner(modal_area);
+
+    let body_lines: Vec<Line<'static>> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            // First line is the conventional-commits subject; highlight it.
+            let style = if i == 0 {
+                Style::default()
+                    .fg(t.fg_bright)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(t.fg_normal)
+            };
+            Line::from(Span::styled((*line).to_string(), style))
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(Text::from(body_lines))
+        .style(Style::default().bg(t.bg_modal))
+        .wrap(ratatui::widgets::Wrap { trim: false });
     f.render_widget(paragraph, inner);
 }
 
@@ -1021,6 +1086,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("h/l", "Panes"),
             ("u", "View"),
             ("t", "Theme"),
+            ("c", "Commit"),
             ("r", "Rebase"),
             ("s", "Sync"),
             ("L", "Log"),

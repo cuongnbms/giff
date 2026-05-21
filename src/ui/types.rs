@@ -71,6 +71,11 @@ pub struct App {
     /// When true, the diff is fetched with `--unified=<huge>`, so every line
     /// of each changed file is shown as context (full-file view).
     pub full_file: bool,
+    /// AI-generated commit message awaiting user confirmation. Shown via the
+    /// commit modal; `None` means no commit flow is in progress.
+    pub pending_commit_message: Option<String>,
+    /// Whether the commit confirmation modal is currently displayed.
+    pub show_commit_modal: bool,
 }
 
 pub enum Pane {

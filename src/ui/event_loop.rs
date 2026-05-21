@@ -1,3 +1,4 @@
+use crate::commit;
 use crate::diff::{self, DiffSource};
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
@@ -195,6 +196,84 @@ where
 {
     app.status_message = Some(msg.into());
     let _ = terminal.draw(|f| super::render::ui(f, app));
+}
+
+/// Generate a commit message via the claude CLI and stash it on `app` so the
+/// confirmation modal can display it. No git state is changed here — staging
+/// and committing happen only after the user confirms.
+fn perform_commit_request<B: Backend>(terminal: &mut Terminal<B>, app: &mut App)
+where
+    std::io::Error: From<B::Error>,
+{
+    match diff::has_uncommitted_changes() {
+        Ok(false) => {
+            app.status_message = Some("Nothing to commit".to_string());
+            return;
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Error: {}", e));
+            return;
+        }
+        Ok(true) => {}
+    }
+
+    flash_status(terminal, app, "Generating commit message\u{2026}");
+
+    let context = match diff::get_commit_context() {
+        Ok(c) => c,
+        Err(e) => {
+            app.status_message = Some(format!("Error: {}", e));
+            return;
+        }
+    };
+
+    match commit::generate_commit_message(&context) {
+        Ok(msg) => {
+            app.pending_commit_message = Some(msg);
+            app.show_commit_modal = true;
+            app.status_message = None;
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Error: {}", e));
+        }
+    }
+}
+
+/// User confirmed the pending commit message: stage everything and commit.
+fn perform_commit_confirm<B: Backend>(terminal: &mut Terminal<B>, app: &mut App)
+where
+    std::io::Error: From<B::Error>,
+{
+    let message = match app.pending_commit_message.take() {
+        Some(m) => m,
+        None => {
+            app.show_commit_modal = false;
+            return;
+        }
+    };
+
+    app.show_commit_modal = false;
+    flash_status(terminal, app, "Committing\u{2026}");
+
+    if let Err(e) = diff::stage_all() {
+        app.status_message = Some(format!("Stage failed: {}", e));
+        return;
+    }
+    if let Err(e) = diff::commit_with_message(&message) {
+        app.status_message = Some(format!("Commit failed: {}", e));
+        return;
+    }
+
+    let subject = message.lines().next().unwrap_or("").to_string();
+    app.status_message = Some(format!("Committed: {}", subject));
+    app.branch_status = diff::branch_status().ok();
+    reload_diff(app);
+}
+
+fn cancel_commit(app: &mut App) {
+    app.pending_commit_message = None;
+    app.show_commit_modal = false;
+    app.status_message = Some("Commit cancelled".to_string());
 }
 
 fn perform_sync<B: Backend>(terminal: &mut Terminal<B>, app: &mut App)
@@ -486,6 +565,20 @@ where
                     // Clear transient status message on any keypress
                     app.status_message = None;
 
+                    // Handle commit confirmation modal if shown
+                    if app.show_commit_modal {
+                        match key.code {
+                            KeyCode::Enter | KeyCode::Char('y') => {
+                                perform_commit_confirm(terminal, &mut app);
+                            }
+                            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('n') => {
+                                cancel_commit(&mut app);
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     // Handle help modal if shown
                     if app.show_help_modal {
                         match key.code {
@@ -611,11 +704,11 @@ where
                                 set_change_state(&mut app, ChangeState::Rejected);
                             }
                         }
-                        KeyCode::Char('c') => {
-                            if let AppMode::Rebase = app.app_mode {
-                                commit_rebase_changes(&mut app);
-                            }
-                        }
+                        KeyCode::Char('c') => match app.app_mode {
+                            AppMode::Rebase => commit_rebase_changes(&mut app),
+                            AppMode::Diff => perform_commit_request(terminal, &mut app),
+                            _ => {}
+                        },
                         KeyCode::Char('j') | KeyCode::Down => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
@@ -885,7 +978,7 @@ where
                     }
                 }
                 Event::Mouse(mouse) => {
-                    if app.show_help_modal || app.show_rebase_modal {
+                    if app.show_help_modal || app.show_rebase_modal || app.show_commit_modal {
                         continue;
                     }
                     let size = terminal.size()?;
@@ -1065,6 +1158,8 @@ mod tests {
             file_list_width_pct: 20,
             resizing_divider: false,
             full_file: false,
+            pending_commit_message: None,
+            show_commit_modal: false,
         }
     }
 

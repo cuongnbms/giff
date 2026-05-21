@@ -1,3 +1,4 @@
+mod commit;
 mod config;
 mod diff;
 mod ui;

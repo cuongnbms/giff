@@ -700,6 +700,76 @@ pub fn push() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Gather everything the commit-message generator needs in one string:
+/// the last few commit subjects (for style matching) followed by the full
+/// unified diff of every change that would land in the next commit
+/// (staged + unstaged on tracked files, plus a synthesized diff for each
+/// untracked file).
+pub fn get_commit_context() -> Result<String, Box<dyn Error>> {
+    let mut out = String::new();
+
+    // Recent commit subjects so the model can match prevailing style/language.
+    let log = Command::new("git")
+        .args(["log", "-10", "--pretty=format:%s", "--no-color"])
+        .output()?;
+    if log.status.success() {
+        let subjects = String::from_utf8_lossy(&log.stdout);
+        if !subjects.trim().is_empty() {
+            out.push_str("=== Recent commits (for style reference) ===\n");
+            out.push_str(subjects.trim_end());
+            out.push_str("\n\n");
+        }
+    }
+
+    out.push_str("=== Diff to be committed ===\n");
+
+    // Staged + unstaged combined against HEAD (covers tracked changes).
+    let diff_out = Command::new("git")
+        .args(["diff", "HEAD", "--no-color"])
+        .output()?;
+    if diff_out.status.success() {
+        out.push_str(&String::from_utf8_lossy(&diff_out.stdout));
+    }
+
+    // Synthesize a diff for each untracked file so the model sees new files too.
+    if let Ok(repo_root) = git_repo_root() {
+        for file in list_untracked_files(&repo_root) {
+            if let Some(extra) = diff_untracked_file(&repo_root, &file) {
+                out.push_str(&extra);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// Stage every change in the working tree (`git add -A`).
+pub fn stage_all() -> Result<(), Box<dyn Error>> {
+    let output = Command::new("git").args(["add", "-A"]).output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+/// Create a commit with the given message. Multi-line messages are passed
+/// through `git commit -m <msg>` verbatim, which git handles correctly.
+pub fn commit_with_message(message: &str) -> Result<(), Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["commit", "-m", message])
+        .output()?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
 /// Run `git push -u <remote> <branch>` to publish a branch and set its upstream.
 pub fn push_set_upstream(remote: &str, branch: &str) -> Result<(), Box<dyn Error>> {
     let output = Command::new("git")
