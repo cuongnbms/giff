@@ -29,7 +29,7 @@ run = "cargo run --"
 description = "Full CI check: lint + test"
 depends = ["lint", "test"]
 
-[tasks.install-macos]
-description = "Install release binary to /usr/local/bin (macOS)"
+[tasks.install]
+description = "Install release binary to /usr/local/bin (requires sudo)"
 depends = ["build"]
-run = "install -m 0755 target/release/giff /usr/local/bin/giff && echo 'installed: /usr/local/bin/giff'"
+run = "sudo install -m 0755 target/release/giff /usr/local/bin/giff && echo 'installed: /usr/local/bin/giff'"
