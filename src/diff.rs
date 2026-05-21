@@ -26,13 +26,23 @@ pub enum DiffSource {
 }
 
 impl DiffSource {
+    /// Fetch the diff with git's default context (3 lines).
     pub fn fetch(&self) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+        self.fetch_with_context(None)
+    }
+
+    /// Fetch with an explicit context size. `None` means git's default;
+    /// `Some(n)` passes `--unified=n` (use a huge value for full-file view).
+    pub fn fetch_with_context(
+        &self,
+        context: Option<usize>,
+    ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
         match self {
-            DiffSource::Uncommitted => get_uncommitted_changes(),
-            DiffSource::ToRef(r) => get_changes_to_ref(r),
-            DiffSource::Between { from, to } => get_changes_between(from, to),
-            DiffSource::CustomArgs(a) => get_changes_with_args(a),
-            DiffSource::Commit(h) => get_changes_for_commit(h),
+            DiffSource::Uncommitted => get_uncommitted_changes(context),
+            DiffSource::ToRef(r) => get_changes_to_ref(r, context),
+            DiffSource::Between { from, to } => get_changes_between(from, to, context),
+            DiffSource::CustomArgs(a) => get_changes_with_args(a, context),
+            DiffSource::Commit(h) => get_changes_for_commit(h, context),
         }
     }
 }
@@ -74,17 +84,20 @@ pub fn get_commit_log() -> Result<Vec<CommitInfo>, Box<dyn Error>> {
 
 pub fn get_changes_for_commit(
     hash: &str,
+    context: Option<usize>,
 ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let output = Command::new("git")
-        .args([
-            "show",
-            "--no-color",
-            "--format=",
-            "-m",
-            "--first-parent",
-            hash,
-        ])
-        .output()?;
+    let mut cmd_args: Vec<String> = vec![
+        "show".to_string(),
+        "--no-color".to_string(),
+        "--format=".to_string(),
+        "-m".to_string(),
+        "--first-parent".to_string(),
+    ];
+    if let Some(n) = context {
+        cmd_args.push(format!("--unified={}", n));
+    }
+    cmd_args.push(hash.to_string());
+    let output = Command::new("git").args(&cmd_args).output()?;
 
     if !output.status.success() {
         return Err(format!(
@@ -105,9 +118,12 @@ pub fn get_changes_for_commit(
 }
 
 // Get changes with completely custom diff args
-pub fn get_changes_with_args(args: &str) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+pub fn get_changes_with_args(
+    args: &str,
+    context: Option<usize>,
+) -> Result<(FileChanges, String, String), Box<dyn Error>> {
     let args_vec: Vec<&str> = args.split_whitespace().collect();
-    let diff_output = get_diff_output_with_args(&args_vec, None)?;
+    let diff_output = get_diff_output_with_args(&args_vec, context)?;
 
     // Try to extract meaningful labels from the args
     let left_label = extract_left_label(args);
@@ -117,8 +133,10 @@ pub fn get_changes_with_args(args: &str) -> Result<(FileChanges, String, String)
 }
 
 // Compare uncommitted changes (git diff)
-pub fn get_uncommitted_changes() -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let mut diff_output = get_diff_output_with_args(&[], None)?;
+pub fn get_uncommitted_changes(
+    context: Option<usize>,
+) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+    let mut diff_output = get_diff_output_with_args(&[], context)?;
 
     // `git diff` omits untracked files. Synthesize a diff against /dev/null
     // for each so newly added files render alongside modifications.
@@ -173,8 +191,9 @@ fn diff_untracked_file(repo_root: &str, file: &str) -> Option<String> {
 // Compare a specific reference to working tree (git diff <ref>)
 pub fn get_changes_to_ref(
     reference: &str,
+    context: Option<usize>,
 ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let diff_output = get_diff_output_with_args(&[reference], None)?;
+    let diff_output = get_diff_output_with_args(&[reference], context)?;
     Ok((
         parse_diff_output(&diff_output)?,
         reference.to_string(),
@@ -186,8 +205,9 @@ pub fn get_changes_to_ref(
 pub fn get_changes_between(
     from: &str,
     to: &str,
+    context: Option<usize>,
 ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let diff_output = get_diff_output_with_args(&[&format!("{}..{}", from, to)], None)?;
+    let diff_output = get_diff_output_with_args(&[&format!("{}..{}", from, to)], context)?;
     Ok((
         parse_diff_output(&diff_output)?,
         from.to_string(),
