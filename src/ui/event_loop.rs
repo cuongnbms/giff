@@ -131,6 +131,10 @@ fn reload_diff(app: &mut App) {
 
     if new_changes == app.file_changes && new_left == app.left_label && new_right == app.right_label
     {
+        // Diff is unchanged, but operations like push/pull alter the upstream
+        // ahead/behind counts shown in the header — refresh those even on the
+        // no-op path so the status bar stays accurate.
+        app.branch_status = diff::branch_status().ok();
         return;
     }
 
