@@ -86,17 +86,11 @@ pub fn get_changes_for_commit(
     hash: &str,
     context: Option<usize>,
 ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let mut cmd_args: Vec<String> = vec![
-        "show".to_string(),
-        "--no-color".to_string(),
-        "--format=".to_string(),
-        "-m".to_string(),
-        "--first-parent".to_string(),
-    ];
-    if let Some(n) = context {
-        cmd_args.push(format!("--unified={}", n));
-    }
-    cmd_args.push(hash.to_string());
+    let cmd_args = build_git_args(
+        "show",
+        &["--format=", "-m", "--first-parent", hash],
+        context,
+    );
     let output = Command::new("git").args(&cmd_args).output()?;
 
     if !output.status.success() {
@@ -268,16 +262,15 @@ pub fn get_upstream_branch() -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
-/// Build the argv for `git <args>` invocations. Pulled out for testability
-/// and so callers can request a non-default context size via `--unified=N`.
-fn build_diff_args(extra: &[&str], context: Option<usize>) -> Vec<String> {
-    let mut out = vec!["diff".to_string(), "--no-color".to_string()];
+/// Build the argv for a `git <subcmd> --no-color [--unified=N] <extra...>`
+/// invocation. Pulled out for testability and to centralize the `--unified`
+/// flag formatting across the diff and show paths.
+fn build_git_args(subcmd: &str, extra: &[&str], context: Option<usize>) -> Vec<String> {
+    let mut out = vec![subcmd.to_string(), "--no-color".to_string()];
     if let Some(n) = context {
         out.push(format!("--unified={}", n));
     }
-    for a in extra {
-        out.push((*a).to_string());
-    }
+    out.extend(extra.iter().map(|s| s.to_string()));
     out
 }
 
@@ -285,7 +278,7 @@ fn get_diff_output_with_args(
     args: &[&str],
     context: Option<usize>,
 ) -> Result<String, Box<dyn Error>> {
-    let cmd_args = build_diff_args(args, context);
+    let cmd_args = build_git_args("diff", args, context);
     let output = Command::new("git").args(&cmd_args).output()?;
 
     if !output.status.success() {
@@ -842,29 +835,50 @@ Binary files a/image.png and b/image.png differ
         // Or no entry at all — both are acceptable
     }
 
-    // ── build_diff_args ─────────────────────────────────────────────────
+    // ── build_git_args ──────────────────────────────────────────────────
 
     #[test]
     fn diff_args_without_context_omits_unified_flag() {
-        let args = build_diff_args(&[], None);
+        let args = build_git_args("diff", &[], None);
         assert_eq!(args, vec!["diff", "--no-color"]);
     }
 
     #[test]
     fn diff_args_passes_extra_args_through() {
-        let args = build_diff_args(&["HEAD~1..HEAD"], None);
+        let args = build_git_args("diff", &["HEAD~1..HEAD"], None);
         assert_eq!(args, vec!["diff", "--no-color", "HEAD~1..HEAD"]);
     }
 
     #[test]
     fn diff_args_with_context_inserts_unified_flag() {
-        let args = build_diff_args(&[], Some(42));
+        let args = build_git_args("diff", &[], Some(42));
         assert_eq!(args, vec!["diff", "--no-color", "--unified=42"]);
     }
 
     #[test]
     fn diff_args_with_context_and_extras() {
-        let args = build_diff_args(&["HEAD"], Some(99999));
+        let args = build_git_args("diff", &["HEAD"], Some(99999));
         assert_eq!(args, vec!["diff", "--no-color", "--unified=99999", "HEAD"]);
+    }
+
+    #[test]
+    fn show_args_with_context_inserts_unified_before_extras() {
+        let args = build_git_args(
+            "show",
+            &["--format=", "-m", "--first-parent", "abc123"],
+            Some(50),
+        );
+        assert_eq!(
+            args,
+            vec![
+                "show",
+                "--no-color",
+                "--unified=50",
+                "--format=",
+                "-m",
+                "--first-parent",
+                "abc123",
+            ]
+        );
     }
 }
