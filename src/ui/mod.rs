@@ -165,7 +165,11 @@ fn spawn_repo_watcher(
             return;
         }
 
-        if event.paths.iter().all(|p| is_ignored_path(p, &repo_root_buf)) {
+        if event
+            .paths
+            .iter()
+            .all(|p| is_ignored_path(p, &repo_root_buf))
+        {
             return;
         }
 

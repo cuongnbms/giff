@@ -99,7 +99,10 @@ fn set_change_state(app: &mut App, state: ChangeState) {
 fn reload_diff(app: &mut App) {
     // Don't reload while the user is mid-rebase or browsing the commit log;
     // either would invalidate the user's current selection state.
-    if matches!(app.app_mode, AppMode::Rebase | AppMode::Log | AppMode::RemotePicker) {
+    if matches!(
+        app.app_mode,
+        AppMode::Rebase | AppMode::Log | AppMode::RemotePicker
+    ) {
         return;
     }
 
@@ -111,9 +114,7 @@ fn reload_diff(app: &mut App) {
         }
     };
 
-    if new_changes == app.file_changes
-        && new_left == app.left_label
-        && new_right == app.right_label
+    if new_changes == app.file_changes && new_left == app.left_label && new_right == app.right_label
     {
         return;
     }
@@ -134,10 +135,7 @@ fn reload_diff(app: &mut App) {
     }
 
     app.current_file_idx = match prev_selected {
-        Some(name) => new_names
-            .iter()
-            .position(|n| n == &name)
-            .unwrap_or(0),
+        Some(name) => new_names.iter().position(|n| n == &name).unwrap_or(0),
         None => 0,
     };
 
@@ -174,11 +172,8 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
 
 /// Set a transient status message and immediately repaint so the user sees
 /// progress before the next blocking git command runs on this thread.
-fn flash_status<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-    msg: impl Into<String>,
-) where
+fn flash_status<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, msg: impl Into<String>)
+where
     std::io::Error: From<B::Error>,
 {
     app.status_message = Some(msg.into());
@@ -265,12 +260,8 @@ where
     }
 }
 
-fn push_to_remote<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-    remote: &str,
-    branch: &str,
-) where
+fn push_to_remote<B: Backend>(terminal: &mut Terminal<B>, app: &mut App, remote: &str, branch: &str)
+where
     std::io::Error: From<B::Error>,
 {
     flash_status(
@@ -280,10 +271,7 @@ fn push_to_remote<B: Backend>(
     );
     match diff::push_set_upstream(remote, branch) {
         Ok(()) => {
-            app.status_message = Some(format!(
-                "Pushed {} \u{2192} {}/{}",
-                branch, remote, branch
-            ));
+            app.status_message = Some(format!("Pushed {} \u{2192} {}/{}", branch, remote, branch));
             reload_diff(app);
         }
         Err(e) => {
@@ -704,8 +692,8 @@ where
                             AppMode::Log => {
                                 if !app.commits.is_empty() {
                                     let page = terminal.size()?.height.saturating_sub(6) as usize;
-                                    app.current_commit_idx = (app.current_commit_idx + page)
-                                        .min(app.commits.len() - 1);
+                                    app.current_commit_idx =
+                                        (app.current_commit_idx + page).min(app.commits.len() - 1);
                                 }
                             }
                             AppMode::RemotePicker => {}
@@ -779,8 +767,7 @@ where
                                 }
                             }
                             AppMode::Log => {
-                                app.current_commit_idx =
-                                    app.commits.len().saturating_sub(1);
+                                app.current_commit_idx = app.commits.len().saturating_sub(1);
                             }
                             AppMode::RemotePicker => {}
                         },
@@ -919,9 +906,9 @@ where
                                 AppMode::Log => {
                                     if !app.commits.is_empty() {
                                         if is_down {
-                                            app.current_commit_idx =
-                                                (app.current_commit_idx + scroll_amount)
-                                                    .min(app.commits.len() - 1);
+                                            app.current_commit_idx = (app.current_commit_idx
+                                                + scroll_amount)
+                                                .min(app.commits.len() - 1);
                                         } else {
                                             app.current_commit_idx = app
                                                 .current_commit_idx

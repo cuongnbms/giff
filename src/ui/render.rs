@@ -148,10 +148,19 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         format!("{} \u{2192} {}", app.left_label, app.right_label),
         Style::default().fg(t.fg_normal),
     ));
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(t.border_dim)));
+    spans.push(Span::styled(
+        " \u{2502} ",
+        Style::default().fg(t.border_dim),
+    ));
     spans.push(Span::styled(mode.to_owned(), Style::default().fg(t.accent)));
-    spans.push(Span::styled(" \u{2502} ", Style::default().fg(t.border_dim)));
-    spans.push(Span::styled(view_mode.to_owned(), Style::default().fg(t.fg_dim)));
+    spans.push(Span::styled(
+        " \u{2502} ",
+        Style::default().fg(t.border_dim),
+    ));
+    spans.push(Span::styled(
+        view_mode.to_owned(),
+        Style::default().fg(t.fg_dim),
+    ));
 
     if !current_file.is_empty() {
         spans.push(Span::styled(
@@ -179,13 +188,12 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
 fn branch_status_spans<'a>(t: &Theme, bs: &crate::diff::BranchStatus) -> Vec<Span<'a>> {
     let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled(
-        "\u{e0a0} ",
-        Style::default().fg(t.accent),
-    ));
+    spans.push(Span::styled("\u{e0a0} ", Style::default().fg(t.accent)));
     spans.push(Span::styled(
         bs.name.clone(),
-        Style::default().fg(t.fg_bright).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(t.fg_bright)
+            .add_modifier(Modifier::BOLD),
     ));
     if bs.upstream.is_some() {
         spans.push(Span::styled(
@@ -194,7 +202,11 @@ fn branch_status_spans<'a>(t: &Theme, bs: &crate::diff::BranchStatus) -> Vec<Spa
         ));
         spans.push(Span::styled(
             format!(" \u{2193}{}", bs.behind),
-            Style::default().fg(if bs.behind > 0 { t.fg_removed } else { t.fg_dim }),
+            Style::default().fg(if bs.behind > 0 {
+                t.fg_removed
+            } else {
+                t.fg_dim
+            }),
         ));
     }
     spans
@@ -249,8 +261,7 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
             let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
             let max_name_width = inner_width.saturating_sub(stats_width);
             let (file_part, dir_part) = split_path_for_display(file);
-            let (file_disp, dir_disp) =
-                fit_file_and_dir(&file_part, &dir_part, max_name_width);
+            let (file_disp, dir_disp) = fit_file_and_dir(&file_part, &dir_part, max_name_width);
 
             let mut spans = vec![Span::styled(file_disp, name_style)];
             if !dir_disp.is_empty() {
@@ -354,8 +365,7 @@ fn render_diff_pane(
     let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
     let h_scroll_u16 = h_scroll.min(u16::MAX as usize) as u16;
 
-    let gutter_paragraph =
-        Paragraph::new(Text::from(gutter_lines)).scroll((scroll_u16, 0));
+    let gutter_paragraph = Paragraph::new(Text::from(gutter_lines)).scroll((scroll_u16, 0));
     f.render_widget(gutter_paragraph, gutter_area);
 
     if content_area.width > 0 {
@@ -630,11 +640,8 @@ fn render_log_ui(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(t.border_focused));
 
     if app.commits.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "  No commits",
-            Style::default().fg(t.fg_dim),
-        ))
-        .block(block);
+        let empty = Paragraph::new(Span::styled("  No commits", Style::default().fg(t.fg_dim)))
+            .block(block);
         f.render_widget(empty, area);
         return;
     }
@@ -1038,11 +1045,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("L", "Close"),
             ("?", "Help"),
         ],
-        AppMode::RemotePicker => &[
-            ("j/k", "Navigate"),
-            ("Enter", "Confirm"),
-            ("Esc", "Cancel"),
-        ],
+        AppMode::RemotePicker => &[("j/k", "Navigate"), ("Enter", "Confirm"), ("Esc", "Cancel")],
     };
 
     let mut spans: Vec<Span> = vec![Span::styled(" ", Style::default())];

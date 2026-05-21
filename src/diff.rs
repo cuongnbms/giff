@@ -175,14 +175,7 @@ fn diff_untracked_file(repo_root: &str, file: &str) -> Option<String> {
     // `git diff --no-index` exits with code 1 when files differ; ignore status.
     let output = Command::new("git")
         .current_dir(repo_root)
-        .args([
-            "diff",
-            "--no-color",
-            "--no-index",
-            "--",
-            "/dev/null",
-            file,
-        ])
+        .args(["diff", "--no-color", "--no-index", "--", "/dev/null", file])
         .output()
         .ok()?;
     Some(String::from_utf8(output.stdout).unwrap_or_default())
@@ -245,7 +238,12 @@ pub fn branch_status() -> Result<BranchStatus, Box<dyn Error>> {
 
 fn count_ahead_behind(upstream: &str) -> Result<(usize, usize), Box<dyn Error>> {
     let output = Command::new("git")
-        .args(["rev-list", "--left-right", "--count", &format!("{}...HEAD", upstream)])
+        .args([
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{}...HEAD", upstream),
+        ])
         .output()?;
     if !output.status.success() {
         return Ok((0, 0));
