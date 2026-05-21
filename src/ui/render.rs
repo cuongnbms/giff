@@ -1330,6 +1330,16 @@ fn truncate_path(path: &str, max_width: usize) -> String {
     format!("\u{2026}{}", &path[start_byte..])
 }
 
+fn count_file_changes(app: &App, file: &str) -> (usize, usize) {
+    if let Some((base, head)) = app.file_changes.get(file) {
+        let dels = base.iter().filter(|(_, l)| l.starts_with('-')).count();
+        let adds = head.iter().filter(|(_, l)| l.starts_with('+')).count();
+        (adds, dels)
+    } else {
+        (0, 0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1430,15 +1440,5 @@ mod tests {
         // " +1000 -99999" → 1 + 5 + 1 + 6 = 13
         assert_eq!(width, 13);
         assert_eq!(stats_content_width(&spans), width);
-    }
-}
-
-fn count_file_changes(app: &App, file: &str) -> (usize, usize) {
-    if let Some((base, head)) = app.file_changes.get(file) {
-        let dels = base.iter().filter(|(_, l)| l.starts_with('-')).count();
-        let adds = head.iter().filter(|(_, l)| l.starts_with('+')).count();
-        (adds, dels)
-    } else {
-        (0, 0)
     }
 }
