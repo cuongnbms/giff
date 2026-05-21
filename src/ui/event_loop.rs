@@ -11,6 +11,17 @@ use super::rebase::prepare_rebase_changes;
 use super::render::ui;
 use super::types::*;
 
+/// Map the `full_file` bool to the context-lines value passed to git.
+/// `None` keeps git's default 3-line context; the huge value effectively
+/// asks for every line.
+fn full_file_context(full_file: bool) -> Option<usize> {
+    if full_file {
+        Some(usize::MAX / 2)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum PushDecision {
     NoRemotes,
@@ -106,7 +117,8 @@ fn reload_diff(app: &mut App) {
         return;
     }
 
-    let (new_changes, new_left, new_right) = match app.diff_source.fetch() {
+    let context = full_file_context(app.full_file);
+    let (new_changes, new_left, new_right) = match app.diff_source.fetch_with_context(context) {
         Ok(v) => v,
         Err(e) => {
             app.status_message = Some(format!("Reload failed: {}", e));
@@ -151,7 +163,10 @@ fn reload_diff(app: &mut App) {
 /// and scroll positions to a clean slate. Used when switching to a commit's
 /// diff or restoring the original diff source on log exit.
 fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String> {
-    let (changes, left, right) = source.fetch().map_err(|e| e.to_string())?;
+    let context = full_file_context(app.full_file);
+    let (changes, left, right) = source
+        .fetch_with_context(context)
+        .map_err(|e| e.to_string())?;
     let mut names: Vec<String> = changes.keys().cloned().collect();
     names.sort();
 
@@ -1000,6 +1015,7 @@ mod tests {
             branch_status: None,
             file_list_width_pct: 20,
             resizing_divider: false,
+            full_file: false,
         }
     }
 
