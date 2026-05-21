@@ -250,10 +250,21 @@ pub fn get_upstream_branch() -> Result<Option<String>, Box<dyn Error>> {
     }
 }
 
-fn get_diff_output_with_args(args: &[&str]) -> Result<String, Box<dyn Error>> {
-    let mut cmd_args = vec!["diff", "--no-color"];
-    cmd_args.extend_from_slice(args);
+/// Build the argv for `git <args>` invocations. Pulled out for testability
+/// and so callers can request a non-default context size via `--unified=N`.
+fn build_diff_args(extra: &[&str], context: Option<usize>) -> Vec<String> {
+    let mut out = vec!["diff".to_string(), "--no-color".to_string()];
+    if let Some(n) = context {
+        out.push(format!("--unified={}", n));
+    }
+    for a in extra {
+        out.push((*a).to_string());
+    }
+    out
+}
 
+fn get_diff_output_with_args(args: &[&str]) -> Result<String, Box<dyn Error>> {
+    let cmd_args = build_diff_args(args, None);
     let output = Command::new("git").args(&cmd_args).output()?;
 
     if !output.status.success() {
@@ -808,5 +819,19 @@ Binary files a/image.png and b/image.png differ
             assert!(head.is_empty());
         }
         // Or no entry at all — both are acceptable
+    }
+
+    // ── build_diff_args ─────────────────────────────────────────────────
+
+    #[test]
+    fn diff_args_without_context_omits_unified_flag() {
+        let args = build_diff_args(&[], None);
+        assert_eq!(args, vec!["diff", "--no-color"]);
+    }
+
+    #[test]
+    fn diff_args_passes_extra_args_through() {
+        let args = build_diff_args(&["HEAD~1..HEAD"], None);
+        assert_eq!(args, vec!["diff", "--no-color", "HEAD~1..HEAD"]);
     }
 }
