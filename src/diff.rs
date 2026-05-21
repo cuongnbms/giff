@@ -481,10 +481,38 @@ pub fn has_uncommitted_changes() -> Result<bool, Box<dyn Error>> {
     Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
 }
 
+/// Join a repo-relative diff path onto `repo_root`, rejecting anything that
+/// would escape the repo.
+///
+/// `git diff` only ever emits repo-relative paths with forward slashes and no
+/// `..` segments, so any input that fails these checks is either a malformed
+/// or hostile diff and must not be written to.
+fn resolve_within_root(repo_root: &Path, file_path: &str) -> Result<PathBuf, Box<dyn Error>> {
+    use std::path::Component;
+
+    if file_path.is_empty() {
+        return Err("empty file path in diff".into());
+    }
+
+    for component in Path::new(file_path).components() {
+        match component {
+            Component::ParentDir => {
+                return Err(format!("path traversal rejected: {}", file_path).into());
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!("absolute path not allowed in diff: {}", file_path).into());
+            }
+            _ => {}
+        }
+    }
+
+    Ok(repo_root.join(file_path))
+}
+
 /// Resolve a diff file path (relative to repo root) to an absolute path.
 fn resolve_diff_path(file_path: &str) -> Result<PathBuf, Box<dyn Error>> {
     let repo_root = git_repo_root()?;
-    Ok(Path::new(&repo_root).join(file_path))
+    resolve_within_root(Path::new(&repo_root), file_path)
 }
 
 /// Apply change operations to file content lines and return the result.
@@ -950,5 +978,49 @@ Binary files a/image.png and b/image.png differ
                 "abc123",
             ]
         );
+    }
+
+    // ── resolve_within_root: path-traversal containment ─────────────────
+
+    #[test]
+    fn resolve_within_root_accepts_repo_relative_path() {
+        let root = Path::new("/repo");
+        let resolved = resolve_within_root(root, "src/main.rs").unwrap();
+        assert_eq!(resolved, PathBuf::from("/repo/src/main.rs"));
+    }
+
+    #[test]
+    fn resolve_within_root_accepts_nested_path() {
+        let root = Path::new("/repo");
+        let resolved = resolve_within_root(root, "a/b/c/file.txt").unwrap();
+        assert_eq!(resolved, PathBuf::from("/repo/a/b/c/file.txt"));
+    }
+
+    #[test]
+    fn resolve_within_root_rejects_parent_traversal() {
+        let root = Path::new("/repo");
+        let err = resolve_within_root(root, "../etc/passwd").unwrap_err();
+        assert!(err.to_string().contains("path traversal"));
+    }
+
+    #[test]
+    fn resolve_within_root_rejects_embedded_parent_traversal() {
+        let root = Path::new("/repo");
+        let err = resolve_within_root(root, "src/../../etc/passwd").unwrap_err();
+        assert!(err.to_string().contains("path traversal"));
+    }
+
+    #[test]
+    fn resolve_within_root_rejects_absolute_unix_path() {
+        let root = Path::new("/repo");
+        let err = resolve_within_root(root, "/etc/passwd").unwrap_err();
+        assert!(err.to_string().contains("absolute path"));
+    }
+
+    #[test]
+    fn resolve_within_root_rejects_empty_path() {
+        let root = Path::new("/repo");
+        let err = resolve_within_root(root, "").unwrap_err();
+        assert!(err.to_string().contains("empty file path"));
     }
 }
