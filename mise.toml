@@ -1,0 +1,35 @@
+min_version = "2024.12.0"
+
+[tools]
+rust = "1.95"
+
+[tasks.build]
+description = "Release build"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+outputs = ["target/release/giff"]
+run = "cargo build --release"
+
+[tasks.test]
+description = "Run all tests"
+run = "cargo test"
+
+[tasks.lint]
+description = "fmt check + clippy (deny warnings)"
+run = ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings"]
+
+[tasks.fmt]
+description = "Format Rust code"
+run = "cargo fmt"
+
+[tasks.run]
+description = "Run giff locally (pass args after --)"
+run = "cargo run --"
+
+[tasks.ci]
+description = "Full CI check: lint + test"
+depends = ["lint", "test"]
+
+[tasks.install-macos]
+description = "Install release binary to /usr/local/bin (macOS)"
+depends = ["build"]
+run = "install -m 0755 target/release/giff /usr/local/bin/giff && echo 'installed: /usr/local/bin/giff'"
