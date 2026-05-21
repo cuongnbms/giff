@@ -819,6 +819,53 @@ where
                                 }
                             }
                         }
+                        KeyCode::Char('f') => {
+                            if let AppMode::Diff = app.app_mode {
+                                app.full_file = !app.full_file;
+                                let context = full_file_context(app.full_file);
+                                match app.diff_source.fetch_with_context(context) {
+                                    Ok((changes, left, right)) => {
+                                        let mut names: Vec<String> =
+                                            changes.keys().cloned().collect();
+                                        names.sort();
+
+                                        app.scroll_positions
+                                            .retain(|name, _| changes.contains_key(name));
+                                        app.h_scroll_positions
+                                            .retain(|name, _| changes.contains_key(name));
+                                        for name in &names {
+                                            app.scroll_positions.entry(name.clone()).or_insert(0);
+                                            app.h_scroll_positions.entry(name.clone()).or_insert(0);
+                                        }
+
+                                        let prev =
+                                            app.file_names.get(app.current_file_idx).cloned();
+                                        app.current_file_idx = prev
+                                            .and_then(|cur| names.iter().position(|n| n == &cur))
+                                            .unwrap_or(0);
+
+                                        app.file_changes = changes;
+                                        app.file_names = names;
+                                        app.left_label = left;
+                                        app.right_label = right;
+                                        app.status_message = Some(
+                                            if app.full_file {
+                                                "Full file: ON"
+                                            } else {
+                                                "Full file: OFF"
+                                            }
+                                            .to_string(),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        // Revert toggle on failure so state stays consistent.
+                                        app.full_file = !app.full_file;
+                                        app.status_message =
+                                            Some(format!("Full-file toggle failed: {}", e));
+                                    }
+                                }
+                            }
+                        }
                         KeyCode::Char('n') => {
                             if let AppMode::Rebase = app.app_mode {
                                 navigate_rebase_file(&mut app, true);
