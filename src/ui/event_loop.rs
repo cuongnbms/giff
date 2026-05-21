@@ -12,11 +12,13 @@ use super::render::ui;
 use super::types::*;
 
 /// Map the `full_file` bool to the context-lines value passed to git.
-/// `None` keeps git's default 3-line context; the huge value effectively
-/// asks for every line.
+/// `None` keeps git's default 3-line context. The large value effectively
+/// asks for every line; it must stay within `i32` because git parses
+/// `--unified=N` into a signed int and silently overflows on larger values
+/// (producing malformed hunk headers).
 fn full_file_context(full_file: bool) -> Option<usize> {
     if full_file {
-        Some(usize::MAX / 2)
+        Some(1_000_000_000)
     } else {
         None
     }
@@ -1159,8 +1161,12 @@ mod tests {
     }
 
     #[test]
-    fn full_file_context_on_returns_huge_context() {
-        assert_eq!(full_file_context(true), Some(usize::MAX / 2));
+    fn full_file_context_on_returns_huge_but_in_range() {
+        let ctx = full_file_context(true).expect("full_file=true should yield context");
+        // Must stay within i32 (git overflows --unified=N parsed as signed int).
+        assert!(ctx <= i32::MAX as usize);
+        // Must be large enough to cover any realistic file.
+        assert!(ctx >= 1_000_000);
     }
 
     fn make_picker_app(remotes: Vec<&str>) -> App {
