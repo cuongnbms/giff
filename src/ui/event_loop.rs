@@ -790,13 +790,10 @@ where
                                 app.focused_pane = Pane::DiffContent;
                             }
                         }
-                        KeyCode::Char('t') => {
+                        KeyCode::Char('t') if !app.theme_cycle.is_empty() => {
                             // Cycle through available themes
-                            if !app.theme_cycle.is_empty() {
-                                app.theme_cycle_idx =
-                                    (app.theme_cycle_idx + 1) % app.theme_cycle.len();
-                                app.theme = app.theme_cycle[app.theme_cycle_idx].clone();
-                            }
+                            app.theme_cycle_idx = (app.theme_cycle_idx + 1) % app.theme_cycle.len();
+                            app.theme = app.theme_cycle[app.theme_cycle_idx].clone();
                         }
                         KeyCode::Char('u') => {
                             // Toggle between unified and side-by-side view (only in diff mode)

@@ -320,11 +320,7 @@ fn render_diff_pane(
     let title_text = if total_lines > visible_height {
         let max_scroll = total_lines.saturating_sub(visible_height);
         let pos = scroll.min(max_scroll);
-        let pct = if max_scroll > 0 {
-            (pos * 100) / max_scroll
-        } else {
-            0
-        };
+        let pct = (pos * 100).checked_div(max_scroll).unwrap_or(0);
         if h_scroll > 0 {
             format!(" {} ({}%) \u{2192}{} ", title, pct, h_scroll)
         } else {
