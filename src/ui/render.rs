@@ -895,6 +895,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("l / \u{2192}", "Focus diff content"),
             row("S-\u{2190}/\u{2192}", "Scroll diff horizontally"),
             row("u", "Toggle unified / side-by-side"),
+            row("f", "Toggle full file / hunks view"),
             row("t", "Toggle dark / light theme"),
             row("r", "Enter rebase mode"),
             row("s", "Sync (pull --rebase, then push)"),
