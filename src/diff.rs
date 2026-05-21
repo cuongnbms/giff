@@ -107,7 +107,7 @@ pub fn get_changes_for_commit(
 // Get changes with completely custom diff args
 pub fn get_changes_with_args(args: &str) -> Result<(FileChanges, String, String), Box<dyn Error>> {
     let args_vec: Vec<&str> = args.split_whitespace().collect();
-    let diff_output = get_diff_output_with_args(&args_vec)?;
+    let diff_output = get_diff_output_with_args(&args_vec, None)?;
 
     // Try to extract meaningful labels from the args
     let left_label = extract_left_label(args);
@@ -118,7 +118,7 @@ pub fn get_changes_with_args(args: &str) -> Result<(FileChanges, String, String)
 
 // Compare uncommitted changes (git diff)
 pub fn get_uncommitted_changes() -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let mut diff_output = get_diff_output_with_args(&[])?;
+    let mut diff_output = get_diff_output_with_args(&[], None)?;
 
     // `git diff` omits untracked files. Synthesize a diff against /dev/null
     // for each so newly added files render alongside modifications.
@@ -174,7 +174,7 @@ fn diff_untracked_file(repo_root: &str, file: &str) -> Option<String> {
 pub fn get_changes_to_ref(
     reference: &str,
 ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let diff_output = get_diff_output_with_args(&[reference])?;
+    let diff_output = get_diff_output_with_args(&[reference], None)?;
     Ok((
         parse_diff_output(&diff_output)?,
         reference.to_string(),
@@ -187,7 +187,7 @@ pub fn get_changes_between(
     from: &str,
     to: &str,
 ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
-    let diff_output = get_diff_output_with_args(&[&format!("{}..{}", from, to)])?;
+    let diff_output = get_diff_output_with_args(&[&format!("{}..{}", from, to)], None)?;
     Ok((
         parse_diff_output(&diff_output)?,
         from.to_string(),
@@ -263,8 +263,11 @@ fn build_diff_args(extra: &[&str], context: Option<usize>) -> Vec<String> {
     out
 }
 
-fn get_diff_output_with_args(args: &[&str]) -> Result<String, Box<dyn Error>> {
-    let cmd_args = build_diff_args(args, None);
+fn get_diff_output_with_args(
+    args: &[&str],
+    context: Option<usize>,
+) -> Result<String, Box<dyn Error>> {
+    let cmd_args = build_diff_args(args, context);
     let output = Command::new("git").args(&cmd_args).output()?;
 
     if !output.status.success() {
@@ -833,5 +836,17 @@ Binary files a/image.png and b/image.png differ
     fn diff_args_passes_extra_args_through() {
         let args = build_diff_args(&["HEAD~1..HEAD"], None);
         assert_eq!(args, vec!["diff", "--no-color", "HEAD~1..HEAD"]);
+    }
+
+    #[test]
+    fn diff_args_with_context_inserts_unified_flag() {
+        let args = build_diff_args(&[], Some(42));
+        assert_eq!(args, vec!["diff", "--no-color", "--unified=42"]);
+    }
+
+    #[test]
+    fn diff_args_with_context_and_extras() {
+        let args = build_diff_args(&["HEAD"], Some(99999));
+        assert_eq!(args, vec!["diff", "--no-color", "--unified=99999", "HEAD"]);
     }
 }
