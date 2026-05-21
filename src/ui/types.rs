@@ -68,6 +68,9 @@ pub struct App {
     pub file_list_width_pct: u16,
     /// True while the user is mid-drag on the Files/Diff divider.
     pub resizing_divider: bool,
+    /// When true, the diff is fetched with `--unified=<huge>`, so every line
+    /// of each changed file is shown as context (full-file view).
+    pub full_file: bool,
 }
 
 pub enum Pane {

@@ -111,6 +111,7 @@ pub fn run_app(
         branch_status: diff::branch_status().ok(),
         file_list_width_pct: 20,
         resizing_divider: false,
+        full_file: false,
     };
 
     // Watch the working tree for changes so we can auto-reload the diff.
