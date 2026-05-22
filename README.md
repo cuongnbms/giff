@@ -20,6 +20,7 @@
 - **Syntax highlighting** — language-aware coloring for 130+ languages via syntect
 - **Full-file view** — flip between hunks-only and the entire file with surrounding context
 - **Horizontal scrolling** — pan long lines with `Shift+←/→` or trackpad swipe; the line-number gutter stays pinned
+- **Word wrap** — press `w` to wrap long diff lines onto multiple visual rows instead of scrolling sideways; pair-by-pair row padding keeps side-by-side panes aligned
 - **Resizable file pane** — drag the divider between the file list and diff pane with the mouse
 - **Branch status in header** — current branch plus ahead/behind counts vs upstream
 - **Auto-reload** — file system watcher refreshes the diff when the working tree changes
@@ -89,6 +90,7 @@ giff --auto-rebase          # auto-rebase if behind upstream, then open the UI
 | `Tab` | Toggle focus between file list and diff |
 | `h` / `l` / `←` / `→` | Focus file list / diff content |
 | `Shift+←` / `Shift+→` | Scroll diff horizontally (for long lines) |
+| `w` | Toggle word wrap for long lines |
 | `u` | Toggle unified / side-by-side view |
 | `f` | Toggle full-file / hunks-only view |
 | `t` | Cycle themes (initial → dark → light) |

@@ -449,26 +449,152 @@ fn wrap_rows(line_width: usize, available_width: usize) -> usize {
     line_width.div_ceil(available_width)
 }
 
-/// Total visual rows consumed by `lines` when rendered with the merged-gutter
-/// wrap layout into `pane_inner_width` columns. The gutter is 7 columns; gap
-/// rows (line_num == 0) collapse to one empty row.
-fn total_wrapped_rows(lines: &[(usize, String)], pane_inner_width: usize) -> usize {
+/// Visual rows occupied by a single LineChange when rendered with the
+/// merged-gutter wrap layout into `pane_inner_width` columns. Gap rows
+/// (line_num == 0) collapse to one empty row.
+pub(super) fn merged_line_rows(line: &LineChange, pane_inner_width: usize) -> usize {
     const GUTTER_WIDTH: usize = 7;
+    if line.0 == 0 {
+        return 1;
+    }
+    let content = line
+        .1
+        .strip_prefix('+')
+        .or_else(|| line.1.strip_prefix('-'))
+        .or_else(|| line.1.strip_prefix(' '))
+        .unwrap_or(&line.1);
+    let w = GUTTER_WIDTH + UnicodeWidthStr::width(content);
+    wrap_rows(w, pane_inner_width)
+}
+
+/// Sum of visual rows across `lines` using the merged-gutter wrap layout.
+fn total_wrapped_rows(lines: &[LineChange], pane_inner_width: usize) -> usize {
     lines
         .iter()
-        .map(|(num, line)| {
-            if *num == 0 {
-                return 1;
-            }
-            let content = line
-                .strip_prefix('+')
-                .or_else(|| line.strip_prefix('-'))
-                .or_else(|| line.strip_prefix(' '))
-                .unwrap_or(line);
-            let w = GUTTER_WIDTH + UnicodeWidthStr::width(content);
-            wrap_rows(w, pane_inner_width)
-        })
+        .map(|l| merged_line_rows(l, pane_inner_width))
         .sum()
+}
+
+/// Allocation-free counterpart to `align_lines` + `total_wrapped_rows`:
+/// returns the number of visual rows used by the aligned side-by-side view
+/// after pair-wise wrap-padding (each pair takes max of the two sides' rows).
+pub(super) fn aligned_wrapped_row_count(
+    base_lines: &[LineChange],
+    head_lines: &[LineChange],
+    pane_inner_width: usize,
+) -> usize {
+    let mut total = 0usize;
+    let mut bi = 0;
+    let mut hi = 0;
+
+    while bi < base_lines.len() || hi < head_lines.len() {
+        let b_is_change = bi < base_lines.len() && base_lines[bi].1.starts_with('-');
+        let h_is_change = hi < head_lines.len() && head_lines[hi].1.starts_with('+');
+
+        if b_is_change || h_is_change {
+            let b_start = bi;
+            while bi < base_lines.len() && base_lines[bi].1.starts_with('-') {
+                bi += 1;
+            }
+            let h_start = hi;
+            while hi < head_lines.len() && head_lines[hi].1.starts_with('+') {
+                hi += 1;
+            }
+            let b_len = bi - b_start;
+            let h_len = hi - h_start;
+            let max_len = b_len.max(h_len);
+            for i in 0..max_len {
+                let b_rows = if i < b_len {
+                    merged_line_rows(&base_lines[b_start + i], pane_inner_width)
+                } else {
+                    1
+                };
+                let h_rows = if i < h_len {
+                    merged_line_rows(&head_lines[h_start + i], pane_inner_width)
+                } else {
+                    1
+                };
+                total += b_rows.max(h_rows);
+            }
+        } else if bi < base_lines.len() && hi < head_lines.len() {
+            let b_rows = merged_line_rows(&base_lines[bi], pane_inner_width);
+            let h_rows = merged_line_rows(&head_lines[hi], pane_inner_width);
+            total += b_rows.max(h_rows);
+            bi += 1;
+            hi += 1;
+        } else if bi < base_lines.len() {
+            total += merged_line_rows(&base_lines[bi], pane_inner_width);
+            bi += 1;
+        } else {
+            total += merged_line_rows(&head_lines[hi], pane_inner_width);
+            hi += 1;
+        }
+    }
+    total
+}
+
+/// Allocation-free counterpart to `build_unified_lines` + `total_wrapped_rows`.
+pub(super) fn unified_wrapped_row_count(
+    base_lines: &[LineChange],
+    head_lines: &[LineChange],
+    pane_inner_width: usize,
+) -> usize {
+    let mut total = 0usize;
+    let mut bi = 0;
+    let mut hi = 0;
+
+    while bi < base_lines.len() || hi < head_lines.len() {
+        let b_is_change = bi < base_lines.len() && base_lines[bi].1.starts_with('-');
+        let h_is_change = hi < head_lines.len() && head_lines[hi].1.starts_with('+');
+
+        if b_is_change || h_is_change {
+            while bi < base_lines.len() && base_lines[bi].1.starts_with('-') {
+                total += merged_line_rows(&base_lines[bi], pane_inner_width);
+                bi += 1;
+            }
+            while hi < head_lines.len() && head_lines[hi].1.starts_with('+') {
+                total += merged_line_rows(&head_lines[hi], pane_inner_width);
+                hi += 1;
+            }
+        } else if bi < base_lines.len() {
+            total += merged_line_rows(&base_lines[bi], pane_inner_width);
+            bi += 1;
+            if hi < head_lines.len() {
+                hi += 1;
+            }
+        } else {
+            total += merged_line_rows(&head_lines[hi], pane_inner_width);
+            hi += 1;
+        }
+    }
+    total
+}
+
+/// In wrap mode, pad each (base, head) pair from `align_lines` so both sides
+/// have equal visual row counts. Inserts blank `(0, "")` entries on the
+/// shorter side after each logical line.
+pub(super) fn pad_aligned_for_wrap(
+    aligned_base: Vec<LineChange>,
+    aligned_head: Vec<LineChange>,
+    pane_inner_width: usize,
+) -> (Vec<LineChange>, Vec<LineChange>) {
+    debug_assert_eq!(aligned_base.len(), aligned_head.len());
+    let mut out_base = Vec::with_capacity(aligned_base.len());
+    let mut out_head = Vec::with_capacity(aligned_head.len());
+    for (b, h) in aligned_base.into_iter().zip(aligned_head) {
+        let b_rows = merged_line_rows(&b, pane_inner_width);
+        let h_rows = merged_line_rows(&h, pane_inner_width);
+        let max_rows = b_rows.max(h_rows);
+        out_base.push(b);
+        out_head.push(h);
+        for _ in b_rows..max_rows {
+            out_base.push((0, String::new()));
+        }
+        for _ in h_rows..max_rows {
+            out_head.push((0, String::new()));
+        }
+    }
+    (out_base, out_head)
 }
 
 /// Produce aligned line vectors for side-by-side display.
@@ -609,6 +735,14 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
     let is_focused = matches!(app.focused_pane, Pane::DiffContent);
 
     let (aligned_base, aligned_head) = align_lines(base_lines, head_lines);
+    // In wrap mode, pad each pair so both panes' visual rows stay aligned.
+    // Use the smaller pane width for wrap math so both sides agree on counts.
+    let (aligned_base, aligned_head) = if app.wrap_mode {
+        let pane_inner = base_area.width.min(head_area.width).saturating_sub(2) as usize;
+        pad_aligned_for_wrap(aligned_base, aligned_head, pane_inner)
+    } else {
+        (aligned_base, aligned_head)
+    };
 
     render_diff_pane(
         f,
@@ -1303,15 +1437,8 @@ fn clamp_scroll(app: &mut App, content_area_width: u16, content_area_height: u16
         };
         let inner_width = pane_width.saturating_sub(2) as usize;
         match app.view_mode {
-            ViewMode::SideBySide => {
-                let (aligned_base, aligned_head) = align_lines(base, head);
-                total_wrapped_rows(&aligned_base, inner_width)
-                    .max(total_wrapped_rows(&aligned_head, inner_width))
-            }
-            ViewMode::Unified => {
-                let unified = build_unified_lines(base, head);
-                total_wrapped_rows(&unified, inner_width)
-            }
+            ViewMode::SideBySide => aligned_wrapped_row_count(base, head, inner_width),
+            ViewMode::Unified => unified_wrapped_row_count(base, head, inner_width),
         }
     } else {
         match app.view_mode {
@@ -1577,6 +1704,55 @@ mod tests {
         let content = format!("+{}", "x".repeat(80));
         let lines = vec![(1, content)];
         assert_eq!(total_wrapped_rows(&lines, 80), 2);
+    }
+
+    // ── pad_aligned_for_wrap ──────────────────────────────────────────
+
+    #[test]
+    fn test_pad_aligned_for_wrap_pads_shorter_side() {
+        // Base line wraps to 2 rows at width=10 (gutter 7 + content 5 = 12 → 2),
+        // head line wraps to 1 row at width=10 (gutter 7 + content 2 = 9 → 1).
+        // Padding should add 1 blank entry on the head side.
+        let base = vec![(1, " aaaaa".to_string())];
+        let head = vec![(1, " bb".to_string())];
+        let (b, h) = pad_aligned_for_wrap(base, head, 10);
+        assert_eq!(b.len(), 1);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h[1], (0, String::new()));
+    }
+
+    #[test]
+    fn test_pad_aligned_for_wrap_no_op_when_equal() {
+        let base = vec![(1, " short".to_string())];
+        let head = vec![(1, " also".to_string())];
+        let (b, h) = pad_aligned_for_wrap(base.clone(), head.clone(), 80);
+        assert_eq!(b.len(), 1);
+        assert_eq!(h.len(), 1);
+    }
+
+    // ── allocation-free wrapped row counters ─────────────────────────
+
+    #[test]
+    fn test_unified_wrapped_row_count_matches_unified_lines() {
+        // Build a synthetic diff: 1 context + 1 removal + 1 addition.
+        let base = vec![(1, " ctx".to_string()), (2, "-bye".to_string())];
+        let head = vec![(1, " ctx".to_string()), (2, "+hi".to_string())];
+        let unified = build_unified_lines(&base, &head);
+        let alloc_total = total_wrapped_rows(&unified, 80);
+        let free_total = unified_wrapped_row_count(&base, &head, 80);
+        assert_eq!(alloc_total, free_total);
+    }
+
+    #[test]
+    fn test_aligned_wrapped_row_count_matches_padded_total() {
+        // For side-by-side: padded vector total rows should equal counter result.
+        let base = vec![(1, " ctx".to_string()), (2, "-removed line".to_string())];
+        let head = vec![(1, " ctx".to_string()), (2, "+added".to_string())];
+        let (ab, ah) = align_lines(&base, &head);
+        let (pb, ph) = pad_aligned_for_wrap(ab, ah, 20);
+        let padded_total = total_wrapped_rows(&pb, 20).max(total_wrapped_rows(&ph, 20));
+        let free_total = aligned_wrapped_row_count(&base, &head, 20);
+        assert_eq!(padded_total, free_total);
     }
 
     #[test]
