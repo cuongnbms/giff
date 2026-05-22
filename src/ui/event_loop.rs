@@ -12,6 +12,22 @@ use super::rebase::prepare_rebase_changes;
 use super::render::ui;
 use super::types::*;
 
+/// Replicates ratatui's `List` offset rule for a fresh (default) `ListState`:
+/// the offset is whatever's needed to keep the selected index visible. Used to
+/// translate a click row in the file list pane back to a file index without
+/// persisting `ListState` across renders.
+fn file_list_offset(selected: usize, total: usize, visible_height: usize) -> usize {
+    if total == 0 || visible_height == 0 || total <= visible_height {
+        return 0;
+    }
+    let max_offset = total - visible_height;
+    if selected < visible_height {
+        0
+    } else {
+        (selected + 1 - visible_height).min(max_offset)
+    }
+}
+
 /// Map the `full_file` bool to the context-lines value passed to git.
 /// `None` keeps git's default 3-line context. The large value effectively
 /// asks for every line; it must stay within `i32` because git parses
@@ -1011,6 +1027,9 @@ where
                         let on_divider = mouse.row > 0
                             && mouse.row < size.height.saturating_sub(1)
                             && (mouse.column as i32 - file_list_width as i32).abs() <= 1;
+                        let in_file_list = mouse.column < file_list_width
+                            && mouse.row > 0
+                            && mouse.row < size.height.saturating_sub(1);
                         match mouse.kind {
                             MouseEventKind::Down(MouseButton::Left) if on_divider => {
                                 app.resizing_divider = true;
@@ -1025,6 +1044,29 @@ where
                             }
                             MouseEventKind::Up(MouseButton::Left) if app.resizing_divider => {
                                 app.resizing_divider = false;
+                                continue;
+                            }
+                            MouseEventKind::Down(MouseButton::Left)
+                                if in_file_list && !app.file_names.is_empty() =>
+                            {
+                                // File list inner rows start at y=2 (header at 0,
+                                // top border at 1). Inner height = total - header
+                                // - help - top/bottom borders = size.height - 4.
+                                const INNER_TOP: u16 = 2;
+                                if mouse.row >= INNER_TOP {
+                                    let relative = (mouse.row - INNER_TOP) as usize;
+                                    let visible_height = size.height.saturating_sub(4) as usize;
+                                    let offset = file_list_offset(
+                                        app.current_file_idx,
+                                        app.file_names.len(),
+                                        visible_height,
+                                    );
+                                    let target = offset + relative;
+                                    if target < app.file_names.len() {
+                                        app.current_file_idx = target;
+                                        app.focused_pane = Pane::FileList;
+                                    }
+                                }
                                 continue;
                             }
                             _ => {}
@@ -1331,5 +1373,40 @@ mod tests {
         let mut app = make_picker_app(vec![]);
         picker_navigate(&mut app, true);
         assert_eq!(app.current_remote_idx, 0);
+    }
+
+    // ── file_list_offset ──────────────────────────────────────────────
+
+    #[test]
+    fn file_list_offset_empty_or_zero_height() {
+        assert_eq!(file_list_offset(0, 0, 10), 0);
+        assert_eq!(file_list_offset(0, 5, 0), 0);
+    }
+
+    #[test]
+    fn file_list_offset_list_fits_in_view() {
+        // 5 items, height 10 → no scrolling needed.
+        assert_eq!(file_list_offset(0, 5, 10), 0);
+        assert_eq!(file_list_offset(4, 5, 10), 0);
+    }
+
+    #[test]
+    fn file_list_offset_selected_in_first_page() {
+        // Selected within the first `height` items → offset stays 0.
+        assert_eq!(file_list_offset(0, 100, 10), 0);
+        assert_eq!(file_list_offset(9, 100, 10), 0);
+    }
+
+    #[test]
+    fn file_list_offset_selected_past_first_page() {
+        // Selected = 10, height 10 → offset = 1 so selected is on the last row.
+        assert_eq!(file_list_offset(10, 100, 10), 1);
+        assert_eq!(file_list_offset(50, 100, 10), 41);
+    }
+
+    #[test]
+    fn file_list_offset_clamps_to_max() {
+        // Near the end, offset clamps so the last `height` items show.
+        assert_eq!(file_list_offset(99, 100, 10), 90);
     }
 }
