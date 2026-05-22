@@ -38,8 +38,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // Clamp scroll position so it cannot exceed content bounds
     if matches!(app.app_mode, AppMode::Diff) {
-        clamp_scroll(app, main_chunks[1].height);
-        clamp_h_scroll(app, main_chunks[1].width);
+        clamp_scroll(app, main_chunks[1].width, main_chunks[1].height);
+        if !app.wrap_mode {
+            clamp_h_scroll(app, main_chunks[1].width);
+        }
     }
 
     match app.app_mode {
@@ -109,9 +111,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
 fn render_header(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
-    let view_mode = match app.view_mode {
+    let view_mode_base = match app.view_mode {
         ViewMode::SideBySide => "Side-by-Side",
         ViewMode::Unified => "Unified",
+    };
+    let view_mode = if app.wrap_mode {
+        format!("{} + Wrap", view_mode_base)
+    } else {
+        view_mode_base.to_string()
     };
     let mode = match app.app_mode {
         AppMode::Diff => {
@@ -161,10 +168,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         " \u{2502} ",
         Style::default().fg(t.border_dim),
     ));
-    spans.push(Span::styled(
-        view_mode.to_owned(),
-        Style::default().fg(t.fg_dim),
-    ));
+    spans.push(Span::styled(view_mode, Style::default().fg(t.fg_dim)));
 
     if !current_file.is_empty() {
         spans.push(Span::styled(
@@ -300,6 +304,7 @@ fn render_diff_pane(
     filename: &str,
     scroll: usize,
     h_scroll: usize,
+    wrap_mode: bool,
     is_focused: bool,
     area: Rect,
     theme: &Theme,
@@ -318,71 +323,109 @@ fn render_diff_pane(
     };
 
     let (gutter_lines, content_lines) = highlight_line_changes_split(lines, filename, theme);
-    let total_lines = content_lines.len();
-    let visible_height = area.height.saturating_sub(2) as usize;
-
-    let title_text = if total_lines > visible_height {
-        let max_scroll = total_lines.saturating_sub(visible_height);
-        let pos = scroll.min(max_scroll);
-        let pct = (pos * 100).checked_div(max_scroll).unwrap_or(0);
-        if h_scroll > 0 {
-            format!(" {} ({}%) \u{2192}{} ", title, pct, h_scroll)
-        } else {
-            format!(" {} ({}%) ", title, pct)
-        }
-    } else if h_scroll > 0 {
-        format!(" {} \u{2192}{} ", title, h_scroll)
-    } else {
-        format!(" {} ", title)
-    };
 
     let block = Block::default()
-        .title(Span::styled(title_text, title_style))
+        // Placeholder title; populated after we know total visible row count.
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color));
     let inner = block.inner(area);
+    let visible_height = inner.height as usize;
+
+    let (total_rows, title_text) = if wrap_mode {
+        let rows = total_wrapped_rows(lines, inner.width as usize);
+        let title_text = if rows > visible_height {
+            let max_scroll = rows.saturating_sub(visible_height);
+            let pos = scroll.min(max_scroll);
+            let pct = (pos * 100).checked_div(max_scroll).unwrap_or(0);
+            format!(" {} ({}%) \u{2502} wrap ", title, pct)
+        } else {
+            format!(" {} \u{2502} wrap ", title)
+        };
+        (rows, title_text)
+    } else {
+        let rows = content_lines.len();
+        let title_text = if rows > visible_height {
+            let max_scroll = rows.saturating_sub(visible_height);
+            let pos = scroll.min(max_scroll);
+            let pct = (pos * 100).checked_div(max_scroll).unwrap_or(0);
+            if h_scroll > 0 {
+                format!(" {} ({}%) \u{2192}{} ", title, pct, h_scroll)
+            } else {
+                format!(" {} ({}%) ", title, pct)
+            }
+        } else if h_scroll > 0 {
+            format!(" {} \u{2192}{} ", title, h_scroll)
+        } else {
+            format!(" {} ", title)
+        };
+        (rows, title_text)
+    };
+
+    let block = block.title(Span::styled(title_text, title_style));
     f.render_widget(block, area);
 
-    // Pin the line-number gutter + change marker (7 cols) so they stay visible
-    // when the user scrolls the code horizontally.
-    const GUTTER_WIDTH: u16 = 7;
-    let gutter_width = GUTTER_WIDTH.min(inner.width);
-    let gutter_area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: gutter_width,
-        height: inner.height,
-    };
-    let content_area = Rect {
-        x: inner.x + gutter_width,
-        y: inner.y,
-        width: inner.width.saturating_sub(gutter_width),
-        height: inner.height,
-    };
-
-    // ratatui Paragraph::scroll() accepts (u16, u16); clamp for content >65k lines.
+    // ratatui Paragraph::scroll() accepts (u16, u16); clamp for content >65k rows.
     let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
-    let h_scroll_u16 = h_scroll.min(u16::MAX as usize) as u16;
 
-    let gutter_paragraph = Paragraph::new(Text::from(gutter_lines)).scroll((scroll_u16, 0));
-    f.render_widget(gutter_paragraph, gutter_area);
+    if wrap_mode {
+        // Merge the gutter into each content line so wrap keeps line numbers on
+        // the first visual row. Continuation rows have no gutter.
+        let merged: Vec<Line<'static>> = gutter_lines
+            .into_iter()
+            .zip(content_lines)
+            .map(|(g, c)| {
+                let mut spans = g.spans;
+                spans.extend(c.spans);
+                Line::from(spans)
+            })
+            .collect();
 
-    if content_area.width > 0 {
-        let content_paragraph =
-            Paragraph::new(Text::from(content_lines)).scroll((scroll_u16, h_scroll_u16));
-        f.render_widget(content_paragraph, content_area);
+        if inner.width > 0 && inner.height > 0 {
+            let paragraph = Paragraph::new(Text::from(merged))
+                .wrap(ratatui::widgets::Wrap { trim: false })
+                .scroll((scroll_u16, 0));
+            f.render_widget(paragraph, inner);
+        }
+    } else {
+        // Pin the line-number gutter + change marker (7 cols) so they stay
+        // visible when the user scrolls the code horizontally.
+        const GUTTER_WIDTH: u16 = 7;
+        let gutter_width = GUTTER_WIDTH.min(inner.width);
+        let gutter_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: gutter_width,
+            height: inner.height,
+        };
+        let content_area = Rect {
+            x: inner.x + gutter_width,
+            y: inner.y,
+            width: inner.width.saturating_sub(gutter_width),
+            height: inner.height,
+        };
+
+        let h_scroll_u16 = h_scroll.min(u16::MAX as usize) as u16;
+
+        let gutter_paragraph = Paragraph::new(Text::from(gutter_lines)).scroll((scroll_u16, 0));
+        f.render_widget(gutter_paragraph, gutter_area);
+
+        if content_area.width > 0 {
+            let content_paragraph =
+                Paragraph::new(Text::from(content_lines)).scroll((scroll_u16, h_scroll_u16));
+            f.render_widget(content_paragraph, content_area);
+        }
     }
 
     // Scrollbar
-    if total_lines > visible_height {
+    if total_rows > visible_height {
         let scrollbar_area = Rect::new(
             area.x,
             area.y + 1,
             area.width,
             area.height.saturating_sub(2),
         );
-        let max_scroll = total_lines.saturating_sub(visible_height);
+        let max_scroll = total_rows.saturating_sub(visible_height);
         let mut scrollbar_state = ScrollbarState::new(max_scroll).position(scroll.min(max_scroll));
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -392,6 +435,40 @@ fn render_diff_pane(
             &mut scrollbar_state,
         );
     }
+}
+
+/// Number of visual rows a line of `line_width` columns occupies when wrapped
+/// to `available_width`. Empty lines still occupy one row.
+fn wrap_rows(line_width: usize, available_width: usize) -> usize {
+    if available_width == 0 {
+        return 1;
+    }
+    if line_width == 0 {
+        return 1;
+    }
+    line_width.div_ceil(available_width)
+}
+
+/// Total visual rows consumed by `lines` when rendered with the merged-gutter
+/// wrap layout into `pane_inner_width` columns. The gutter is 7 columns; gap
+/// rows (line_num == 0) collapse to one empty row.
+fn total_wrapped_rows(lines: &[(usize, String)], pane_inner_width: usize) -> usize {
+    const GUTTER_WIDTH: usize = 7;
+    lines
+        .iter()
+        .map(|(num, line)| {
+            if *num == 0 {
+                return 1;
+            }
+            let content = line
+                .strip_prefix('+')
+                .or_else(|| line.strip_prefix('-'))
+                .or_else(|| line.strip_prefix(' '))
+                .unwrap_or(line);
+            let w = GUTTER_WIDTH + UnicodeWidthStr::width(content);
+            wrap_rows(w, pane_inner_width)
+        })
+        .sum()
 }
 
 /// Produce aligned line vectors for side-by-side display.
@@ -540,6 +617,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         current_file,
         scroll,
         h_scroll,
+        app.wrap_mode,
         is_focused,
         base_area,
         &app.theme,
@@ -551,6 +629,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         current_file,
         scroll,
         h_scroll,
+        app.wrap_mode,
         is_focused,
         head_area,
         &app.theme,
@@ -622,6 +701,7 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         current_file,
         scroll,
         h_scroll,
+        app.wrap_mode,
         is_focused,
         area,
         &app.theme,
@@ -899,6 +979,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("l / \u{2192}", "Focus diff content"),
             row("S-\u{2190}/\u{2192}", "Scroll diff horizontally"),
             row("u", "Toggle unified / side-by-side"),
+            row("w", "Toggle word wrap"),
             row("f", "Toggle full file / hunks view"),
             row("t", "Toggle dark / light theme"),
             row("c", "Commit (AI-generated message)"),
@@ -1085,6 +1166,7 @@ fn render_help(f: &mut Frame, app: &App, area: Rect) {
             ("Tab", "Focus"),
             ("h/l", "Panes"),
             ("u", "View"),
+            ("w", "Wrap"),
             ("t", "Theme"),
             ("c", "Commit"),
             ("r", "Rebase"),
@@ -1200,7 +1282,7 @@ fn clamp_h_scroll(app: &mut App, content_area_width: u16) {
     }
 }
 
-fn clamp_scroll(app: &mut App, content_area_height: u16) {
+fn clamp_scroll(app: &mut App, content_area_width: u16, content_area_height: u16) {
     let file = match app.file_names.get(app.current_file_idx) {
         Some(f) => f,
         None => return,
@@ -1210,9 +1292,32 @@ fn clamp_scroll(app: &mut App, content_area_height: u16) {
         None => return,
     };
 
-    let content_len = match app.view_mode {
-        ViewMode::SideBySide => aligned_line_count(base, head),
-        ViewMode::Unified => unified_line_count(base, head),
+    let content_len = if app.wrap_mode {
+        // Pane inner width = pane area width - 2 (borders).
+        let rest = content_area_width.saturating_sub(
+            (content_area_width as u32 * app.file_list_width_pct as u32 / 100) as u16,
+        );
+        let pane_width = match app.view_mode {
+            ViewMode::SideBySide => rest / 2,
+            ViewMode::Unified => rest,
+        };
+        let inner_width = pane_width.saturating_sub(2) as usize;
+        match app.view_mode {
+            ViewMode::SideBySide => {
+                let (aligned_base, aligned_head) = align_lines(base, head);
+                total_wrapped_rows(&aligned_base, inner_width)
+                    .max(total_wrapped_rows(&aligned_head, inner_width))
+            }
+            ViewMode::Unified => {
+                let unified = build_unified_lines(base, head);
+                total_wrapped_rows(&unified, inner_width)
+            }
+        }
+    } else {
+        match app.view_mode {
+            ViewMode::SideBySide => aligned_line_count(base, head),
+            ViewMode::Unified => unified_line_count(base, head),
+        }
     };
 
     let visible = content_area_height.saturating_sub(2) as usize;
@@ -1431,6 +1536,47 @@ mod tests {
         // " +3 -1" → 1 + 2 + 1 + 2 = 6
         assert_eq!(width, 6);
         assert_eq!(stats_content_width(&spans), width);
+    }
+
+    // ── wrap_rows / total_wrapped_rows ─────────────────────────────────
+
+    #[test]
+    fn test_wrap_rows_empty_line() {
+        assert_eq!(wrap_rows(0, 80), 1);
+    }
+
+    #[test]
+    fn test_wrap_rows_fits() {
+        assert_eq!(wrap_rows(80, 80), 1);
+        assert_eq!(wrap_rows(40, 80), 1);
+    }
+
+    #[test]
+    fn test_wrap_rows_overflows() {
+        assert_eq!(wrap_rows(81, 80), 2);
+        assert_eq!(wrap_rows(160, 80), 2);
+        assert_eq!(wrap_rows(161, 80), 3);
+    }
+
+    #[test]
+    fn test_wrap_rows_zero_width_does_not_panic() {
+        assert_eq!(wrap_rows(100, 0), 1);
+    }
+
+    #[test]
+    fn test_total_wrapped_rows_gap_lines_collapse() {
+        // Two gap rows = 2 rows total, regardless of pane width.
+        let lines = vec![(0, String::new()), (0, String::new())];
+        assert_eq!(total_wrapped_rows(&lines, 80), 2);
+    }
+
+    #[test]
+    fn test_total_wrapped_rows_counts_gutter_in_wrap() {
+        // Content stripped of '+' is 80 cols; gutter adds 7 → 87 cols total.
+        // At pane width 80, that wraps to 2 visual rows.
+        let content = format!("+{}", "x".repeat(80));
+        let lines = vec![(1, content)];
+        assert_eq!(total_wrapped_rows(&lines, 80), 2);
     }
 
     #[test]

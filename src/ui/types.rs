@@ -71,6 +71,9 @@ pub struct App {
     /// When true, the diff is fetched with `--unified=<huge>`, so every line
     /// of each changed file is shown as context (full-file view).
     pub full_file: bool,
+    /// When true, long diff lines wrap onto multiple visual rows instead of
+    /// being clipped (with horizontal scroll). Toggled with `w` in Diff mode.
+    pub wrap_mode: bool,
     /// AI-generated commit message awaiting user confirmation. Shown via the
     /// commit modal; `None` means no commit flow is in progress.
     pub pending_commit_message: Option<String>,

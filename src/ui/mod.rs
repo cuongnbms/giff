@@ -112,6 +112,7 @@ pub fn run_app(
         file_list_width_pct: 20,
         resizing_divider: false,
         full_file: false,
+        wrap_mode: false,
         pending_commit_message: None,
         show_commit_modal: false,
     };

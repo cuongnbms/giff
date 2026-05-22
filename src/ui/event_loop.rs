@@ -918,6 +918,24 @@ where
                                 }
                             }
                         }
+                        KeyCode::Char('w') => {
+                            if let AppMode::Diff = app.app_mode {
+                                app.wrap_mode = !app.wrap_mode;
+                                if app.wrap_mode {
+                                    for v in app.h_scroll_positions.values_mut() {
+                                        *v = 0;
+                                    }
+                                }
+                                app.status_message = Some(
+                                    if app.wrap_mode {
+                                        "Wrap: ON"
+                                    } else {
+                                        "Wrap: OFF"
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                        }
                         KeyCode::Char('f') => {
                             if let AppMode::Diff = app.app_mode {
                                 app.full_file = !app.full_file;
@@ -1162,6 +1180,7 @@ mod tests {
             file_list_width_pct: 20,
             resizing_divider: false,
             full_file: false,
+            wrap_mode: false,
             pending_commit_message: None,
             show_commit_modal: false,
         }
