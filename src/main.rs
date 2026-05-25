@@ -68,9 +68,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Check if rebase is needed (once, reuse in UI)
     let rebase_notification = diff::check_rebase_needed()?;
 
-    // Load config and resolve theme
+    // Load config and resolve theme + initial UI defaults.
     let cfg = config::load_config();
     let theme = config::resolve_theme(&cfg, args.theme.as_deref());
+    let defaults = ui::UiDefaults {
+        view_mode: config::resolve_view_mode(&cfg),
+        wrap_mode: config::resolve_wrap(&cfg),
+    };
     if !ui::is_valid_syntax_theme(&theme.syntax_theme) {
         eprintln!(
             "Warning: syntax theme '{}' not found, using fallback",
@@ -86,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         theme,
         rebase_notification,
         diff_source,
+        defaults,
     )?;
 
     Ok(())

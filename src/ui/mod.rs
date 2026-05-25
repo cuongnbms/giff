@@ -8,6 +8,15 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use types::ViewMode;
+
+/// Initial UI state sourced from config: what view mode to open in and
+/// whether word wrap starts on.
+pub struct UiDefaults {
+    pub view_mode: ViewMode,
+    pub wrap_mode: bool,
+}
+
 use crate::diff::{self, DiffSource, FileChanges};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -43,6 +52,7 @@ pub fn run_app(
     theme: theme::Theme,
     rebase_notification: Option<String>,
     diff_source: DiffSource,
+    defaults: UiDefaults,
 ) -> Result<(), Box<dyn Error>> {
     // Install a panic hook that restores the terminal before printing the
     // panic message. Without this, a panic leaves the terminal in raw mode
@@ -91,7 +101,7 @@ pub fn run_app(
         scroll_positions,
         h_scroll_positions,
         focused_pane: Pane::FileList,
-        view_mode: ViewMode::SideBySide,
+        view_mode: defaults.view_mode,
         app_mode: AppMode::Diff,
         rebase_changes: HashMap::new(),
         current_change_idx: 0,
@@ -112,7 +122,7 @@ pub fn run_app(
         file_list_width_pct: 20,
         resizing_divider: false,
         full_file: false,
-        wrap_mode: false,
+        wrap_mode: defaults.wrap_mode,
         pending_commit_message: None,
         show_commit_modal: false,
     };

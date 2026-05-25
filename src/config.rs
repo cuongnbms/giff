@@ -3,10 +3,15 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::ui::theme::{Theme, ThemeConfig};
+use crate::ui::ViewMode;
 
 #[derive(Default, Deserialize)]
 pub struct Config {
     pub theme: Option<String>,
+    /// Initial word-wrap state. Defaults to `true` when unset.
+    pub wrap: Option<bool>,
+    /// Initial diff layout: `"side-by-side"` (default) or `"unified"`.
+    pub view_mode: Option<String>,
     #[serde(default)]
     pub themes: HashMap<String, ThemeConfig>,
 }
@@ -28,6 +33,28 @@ pub fn load_config() -> Config {
             eprintln!("Warning: failed to parse {}: {}", config_path.display(), e);
             Config::default()
         }
+    }
+}
+
+pub fn resolve_wrap(config: &Config) -> bool {
+    config.wrap.unwrap_or(true)
+}
+
+pub fn resolve_view_mode(config: &Config) -> ViewMode {
+    match config.view_mode.as_deref() {
+        Some(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "unified" => ViewMode::Unified,
+            "side-by-side" | "sidebyside" | "side_by_side" | "split" => ViewMode::SideBySide,
+            other => {
+                eprintln!(
+                    "Warning: unknown view_mode '{}' (expected \"side-by-side\" or \"unified\"), \
+                     falling back to side-by-side",
+                    other
+                );
+                ViewMode::SideBySide
+            }
+        },
+        None => ViewMode::SideBySide,
     }
 }
 
@@ -105,6 +132,75 @@ mod tests {
         let t = resolve_theme(&config, Some("custom"));
         assert!(!t.is_dark); // based on light
         assert_eq!(t.accent, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn resolve_wrap_defaults_true() {
+        assert!(resolve_wrap(&empty_config()));
+    }
+
+    #[test]
+    fn resolve_wrap_honors_config() {
+        let cfg = Config {
+            wrap: Some(false),
+            ..Default::default()
+        };
+        assert!(!resolve_wrap(&cfg));
+    }
+
+    #[test]
+    fn resolve_view_mode_defaults_side_by_side() {
+        assert!(matches!(
+            resolve_view_mode(&empty_config()),
+            ViewMode::SideBySide
+        ));
+    }
+
+    #[test]
+    fn resolve_view_mode_parses_unified() {
+        let cfg = Config {
+            view_mode: Some("unified".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(resolve_view_mode(&cfg), ViewMode::Unified));
+    }
+
+    #[test]
+    fn resolve_view_mode_parses_side_by_side_aliases() {
+        for alias in ["side-by-side", "SideBySide", "split", "side_by_side"] {
+            let cfg = Config {
+                view_mode: Some(alias.to_string()),
+                ..Default::default()
+            };
+            assert!(
+                matches!(resolve_view_mode(&cfg), ViewMode::SideBySide),
+                "alias {} should resolve to SideBySide",
+                alias
+            );
+        }
+    }
+
+    #[test]
+    fn parses_full_toml_with_ui_defaults() {
+        let src = r#"
+            theme = "dark"
+            wrap = false
+            view_mode = "unified"
+        "#;
+        let cfg: Config = toml::from_str(src).expect("toml should parse");
+        assert_eq!(cfg.theme.as_deref(), Some("dark"));
+        assert_eq!(cfg.wrap, Some(false));
+        assert!(!resolve_wrap(&cfg));
+        assert!(matches!(resolve_view_mode(&cfg), ViewMode::Unified));
+    }
+
+    #[test]
+    fn resolve_view_mode_unknown_falls_back() {
+        let cfg = Config {
+            view_mode: Some("not-a-mode".to_string()),
+            ..Default::default()
+        };
+        assert!(matches!(resolve_view_mode(&cfg), ViewMode::SideBySide));
     }
 
     #[test]

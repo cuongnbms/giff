@@ -144,10 +144,20 @@ giff --auto-rebase          # auto-rebase if behind upstream, then open the UI
 
 ## Configuration
 
-`~/.config/giff/config.toml`
+Path follows the platform's config dir (via the [`dirs`](https://crates.io/crates/dirs) crate):
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/giff/config.toml` |
+| macOS | `~/Library/Application Support/giff/config.toml` |
+| Windows | `%APPDATA%\giff\config.toml` |
 
 ```toml
 theme = "your_custom_theme_name"
+
+# Initial UI defaults (all optional).
+wrap = true                  # word wrap on by default (set false to start unwrapped)
+view_mode = "side-by-side"   # or "unified"
 
 [themes.your_custom_theme_name]
 base = "dark"
