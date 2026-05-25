@@ -1,5 +1,5 @@
 use crate::commit;
-use crate::diff::{self, DiffSource};
+use crate::diff::{self, DiffSource, FileChanges, FileMetaMap};
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -26,6 +26,29 @@ fn file_list_offset(selected: usize, total: usize, visible_height: usize) -> usi
     } else {
         (selected + 1 - visible_height).min(max_offset)
     }
+}
+
+/// Build the sorted, filter-applied file list shown in the Files pane.
+///
+/// `hide_pure_renames` strips out files reported as 100%-similarity renames
+/// (no content change); they're noise during large refactors.
+pub(super) fn visible_file_names(
+    files: &FileChanges,
+    meta: &FileMetaMap,
+    hide_pure_renames: bool,
+) -> Vec<String> {
+    let mut names: Vec<String> = files
+        .keys()
+        .filter(|name| {
+            if !hide_pure_renames {
+                return true;
+            }
+            !meta.get(name.as_str()).is_some_and(|m| m.is_pure_rename())
+        })
+        .cloned()
+        .collect();
+    names.sort();
+    names
 }
 
 /// Map the `full_file` bool to the context-lines value passed to git.
@@ -137,7 +160,7 @@ fn reload_diff(app: &mut App) {
     }
 
     let context = full_file_context(app.full_file);
-    let (new_changes, new_left, new_right) = match app.diff_source.fetch_with_context(context) {
+    let payload = match app.diff_source.fetch_with_context(context) {
         Ok(v) => v,
         Err(e) => {
             app.status_message = Some(format!("Reload failed: {}", e));
@@ -145,7 +168,10 @@ fn reload_diff(app: &mut App) {
         }
     };
 
-    if new_changes == app.file_changes && new_left == app.left_label && new_right == app.right_label
+    if payload.files == app.file_changes
+        && payload.meta == app.file_meta
+        && payload.left_label == app.left_label
+        && payload.right_label == app.right_label
     {
         // Diff is unchanged, but operations like push/pull alter the upstream
         // ahead/behind counts shown in the header — refresh those even on the
@@ -156,14 +182,13 @@ fn reload_diff(app: &mut App) {
 
     let prev_selected = app.file_names.get(app.current_file_idx).cloned();
 
-    let mut new_names: Vec<String> = new_changes.keys().cloned().collect();
-    new_names.sort();
+    let new_names = visible_file_names(&payload.files, &payload.meta, app.hide_pure_renames);
 
     // Drop scroll positions for files that no longer exist; keep the rest.
     app.scroll_positions
-        .retain(|name, _| new_changes.contains_key(name));
+        .retain(|name, _| payload.files.contains_key(name));
     app.h_scroll_positions
-        .retain(|name, _| new_changes.contains_key(name));
+        .retain(|name, _| payload.files.contains_key(name));
     for name in &new_names {
         app.scroll_positions.entry(name.clone()).or_insert(0);
         app.h_scroll_positions.entry(name.clone()).or_insert(0);
@@ -174,10 +199,11 @@ fn reload_diff(app: &mut App) {
         None => 0,
     };
 
-    app.file_changes = new_changes;
+    app.file_changes = payload.files;
+    app.file_meta = payload.meta;
     app.file_names = new_names;
-    app.left_label = new_left;
-    app.right_label = new_right;
+    app.left_label = payload.left_label;
+    app.right_label = payload.right_label;
     app.branch_status = diff::branch_status().ok();
     app.status_message = Some("Diff reloaded".to_string());
 }
@@ -187,11 +213,10 @@ fn reload_diff(app: &mut App) {
 /// diff or restoring the original diff source on log exit.
 fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String> {
     let context = full_file_context(app.full_file);
-    let (changes, left, right) = source
+    let payload = source
         .fetch_with_context(context)
         .map_err(|e| e.to_string())?;
-    let mut names: Vec<String> = changes.keys().cloned().collect();
-    names.sort();
+    let names = visible_file_names(&payload.files, &payload.meta, app.hide_pure_renames);
 
     app.scroll_positions.clear();
     app.h_scroll_positions.clear();
@@ -199,10 +224,11 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
         app.scroll_positions.insert(n.clone(), 0);
         app.h_scroll_positions.insert(n.clone(), 0);
     }
-    app.file_changes = changes;
+    app.file_changes = payload.files;
+    app.file_meta = payload.meta;
     app.file_names = names;
-    app.left_label = left;
-    app.right_label = right;
+    app.left_label = payload.left_label;
+    app.right_label = payload.right_label;
     app.current_file_idx = 0;
     app.diff_source = source;
     Ok(())
@@ -952,20 +978,50 @@ where
                                 );
                             }
                         }
+                        KeyCode::Char('R') => {
+                            if let AppMode::Diff = app.app_mode {
+                                app.hide_pure_renames = !app.hide_pure_renames;
+                                let prev = app.file_names.get(app.current_file_idx).cloned();
+                                app.file_names = visible_file_names(
+                                    &app.file_changes,
+                                    &app.file_meta,
+                                    app.hide_pure_renames,
+                                );
+                                app.current_file_idx = prev
+                                    .and_then(|cur| app.file_names.iter().position(|n| n == &cur))
+                                    .unwrap_or(0);
+                                let hidden = app
+                                    .file_meta
+                                    .values()
+                                    .filter(|m| m.is_pure_rename())
+                                    .count();
+                                app.status_message = Some(if app.hide_pure_renames {
+                                    format!(
+                                        "Renames: hidden ({} file{})",
+                                        hidden,
+                                        if hidden == 1 { "" } else { "s" }
+                                    )
+                                } else {
+                                    "Renames: shown".to_string()
+                                });
+                            }
+                        }
                         KeyCode::Char('f') => {
                             if let AppMode::Diff = app.app_mode {
                                 app.full_file = !app.full_file;
                                 let context = full_file_context(app.full_file);
                                 match app.diff_source.fetch_with_context(context) {
-                                    Ok((changes, left, right)) => {
-                                        let mut names: Vec<String> =
-                                            changes.keys().cloned().collect();
-                                        names.sort();
+                                    Ok(payload) => {
+                                        let names = visible_file_names(
+                                            &payload.files,
+                                            &payload.meta,
+                                            app.hide_pure_renames,
+                                        );
 
                                         app.scroll_positions
-                                            .retain(|name, _| changes.contains_key(name));
+                                            .retain(|name, _| payload.files.contains_key(name));
                                         app.h_scroll_positions
-                                            .retain(|name, _| changes.contains_key(name));
+                                            .retain(|name, _| payload.files.contains_key(name));
                                         for name in &names {
                                             app.scroll_positions.entry(name.clone()).or_insert(0);
                                             app.h_scroll_positions.entry(name.clone()).or_insert(0);
@@ -977,10 +1033,11 @@ where
                                             .and_then(|cur| names.iter().position(|n| n == &cur))
                                             .unwrap_or(0);
 
-                                        app.file_changes = changes;
+                                        app.file_changes = payload.files;
+                                        app.file_meta = payload.meta;
                                         app.file_names = names;
-                                        app.left_label = left;
-                                        app.right_label = right;
+                                        app.left_label = payload.left_label;
+                                        app.right_label = payload.right_label;
                                         app.status_message = Some(
                                             if app.full_file {
                                                 "Full file: ON"
@@ -1170,8 +1227,48 @@ where
 mod tests {
     use super::super::theme::Theme;
     use super::*;
-    use crate::diff::DiffSource;
+    use crate::diff::{DiffSource, FileMeta, RenameInfo};
     use std::collections::HashMap;
+
+    fn meta_with_rename(similarity: u8) -> FileMeta {
+        FileMeta {
+            rename: Some(RenameInfo {
+                from: "old".to_string(),
+                similarity,
+            }),
+        }
+    }
+
+    #[test]
+    fn visible_files_returns_sorted_when_filter_off() {
+        let mut files: FileChanges = HashMap::new();
+        files.insert("b.rs".to_string(), (vec![], vec![]));
+        files.insert("a.rs".to_string(), (vec![], vec![]));
+        files.insert("c.rs".to_string(), (vec![], vec![]));
+        let meta: FileMetaMap = HashMap::new();
+        assert_eq!(
+            visible_file_names(&files, &meta, false),
+            vec!["a.rs", "b.rs", "c.rs"]
+        );
+    }
+
+    #[test]
+    fn visible_files_hides_pure_renames_when_filter_on() {
+        let mut files: FileChanges = HashMap::new();
+        files.insert("kept.rs".to_string(), (vec![], vec![]));
+        files.insert("pure_rename.rs".to_string(), (vec![], vec![]));
+        files.insert("partial_rename.rs".to_string(), (vec![], vec![]));
+        let mut meta: FileMetaMap = HashMap::new();
+        meta.insert("pure_rename.rs".to_string(), meta_with_rename(100));
+        meta.insert("partial_rename.rs".to_string(), meta_with_rename(80));
+
+        // Filter off: everything visible.
+        assert_eq!(visible_file_names(&files, &meta, false).len(), 3);
+
+        // Filter on: pure rename hidden, partial rename kept (has content delta).
+        let visible = visible_file_names(&files, &meta, true);
+        assert_eq!(visible, vec!["kept.rs", "partial_rename.rs"]);
+    }
 
     fn make_app(file_names: Vec<&str>, changes_for: Vec<&str>) -> App {
         let file_names: Vec<String> = file_names.into_iter().map(|s| s.to_string()).collect();
@@ -1194,6 +1291,7 @@ mod tests {
         }
         App {
             file_changes: HashMap::new(),
+            file_meta: HashMap::new(),
             left_label: String::new(),
             right_label: String::new(),
             current_file_idx: 0,
@@ -1223,6 +1321,7 @@ mod tests {
             resizing_divider: false,
             full_file: false,
             wrap_mode: false,
+            hide_pure_renames: false,
             pending_commit_message: None,
             show_commit_modal: false,
         }

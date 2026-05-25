@@ -17,7 +17,7 @@ pub struct UiDefaults {
     pub wrap_mode: bool,
 }
 
-use crate::diff::{self, DiffSource, FileChanges};
+use crate::diff::{self, DiffSource, FileChanges, FileMetaMap};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -45,8 +45,10 @@ fn restore_terminal() {
     let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_app(
     file_changes: FileChanges,
+    file_meta: FileMetaMap,
     left_label: String,
     right_label: String,
     theme: theme::Theme,
@@ -94,6 +96,7 @@ pub fn run_app(
 
     let app = App {
         file_changes,
+        file_meta,
         left_label,
         right_label,
         current_file_idx: 0,
@@ -123,6 +126,7 @@ pub fn run_app(
         resizing_divider: false,
         full_file: false,
         wrap_mode: defaults.wrap_mode,
+        hide_pure_renames: false,
         pending_commit_message: None,
         show_commit_modal: false,
     };

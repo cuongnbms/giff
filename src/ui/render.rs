@@ -266,8 +266,23 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(t.fg_normal)
             };
 
+            // Reserve room for a rename badge (` R`) so the file name and
+            // stats reflow correctly when the badge is present.
+            let rename_badge: Option<&str> = app.file_meta.get(file).and_then(|m| {
+                if m.is_pure_rename() {
+                    Some(" R")
+                } else if m.is_rename() {
+                    Some(" r")
+                } else {
+                    None
+                }
+            });
+            let badge_width = rename_badge.map(|s| s.len()).unwrap_or(0);
+
             let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
-            let max_name_width = inner_width.saturating_sub(stats_width);
+            let max_name_width = inner_width
+                .saturating_sub(stats_width)
+                .saturating_sub(badge_width);
             let (file_part, dir_part) = split_path_for_display(file);
             let (file_disp, dir_disp) = fit_file_and_dir(&file_part, &dir_part, max_name_width);
 
@@ -275,6 +290,12 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
             if !dir_disp.is_empty() {
                 spans.push(Span::styled(
                     format!("  {}", dir_disp),
+                    Style::default().fg(t.fg_dim),
+                ));
+            }
+            if let Some(badge) = rename_badge {
+                spans.push(Span::styled(
+                    badge.to_string(),
                     Style::default().fg(t.fg_dim),
                 ));
             }
@@ -1114,6 +1135,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("S-\u{2190}/\u{2192}", "Scroll diff horizontally"),
             row("u", "Toggle unified / side-by-side"),
             row("w", "Toggle word wrap"),
+            row("R", "Hide pure renames from file list"),
             row("f", "Toggle full file / hunks view"),
             row("t", "Toggle dark / light theme"),
             row("c", "Commit (AI-generated message)"),

@@ -1,4 +1,4 @@
-use crate::diff::{BranchStatus, CommitInfo, DiffSource, FileChanges};
+use crate::diff::{BranchStatus, CommitInfo, DiffSource, FileChanges, FileMetaMap};
 use std::collections::HashMap;
 
 use super::theme::Theme;
@@ -31,9 +31,15 @@ pub struct Change {
 
 pub struct App {
     pub file_changes: FileChanges,
+    /// Per-file metadata (rename info, etc.) parsed from the diff headers.
+    /// Parallel to `file_changes`: same keys.
+    pub file_meta: FileMetaMap,
     pub left_label: String,
     pub right_label: String,
     pub current_file_idx: usize,
+    /// Names visible in the file list. Derived from `file_changes.keys()`
+    /// filtered by `hide_pure_renames`. Never iterate `file_changes.keys()`
+    /// directly for display — always read this.
     pub file_names: Vec<String>,
     pub scroll_positions: HashMap<String, usize>,
     pub h_scroll_positions: HashMap<String, usize>,
@@ -74,6 +80,9 @@ pub struct App {
     /// When true, long diff lines wrap onto multiple visual rows instead of
     /// being clipped (with horizontal scroll). Toggled with `w` in Diff mode.
     pub wrap_mode: bool,
+    /// When true, files that git reports as 100% renames (no content change)
+    /// are hidden from the file list. Toggled with `R` in Diff mode.
+    pub hide_pure_renames: bool,
     /// AI-generated commit message awaiting user confirmation. Shown via the
     /// commit modal; `None` means no commit flow is in progress.
     pub pending_commit_message: Option<String>,

@@ -63,7 +63,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         diff::DiffSource::Uncommitted
     };
 
-    let (file_changes, left_label, right_label) = diff_source.fetch()?;
+    let diff::DiffPayload {
+        files: file_changes,
+        meta: file_meta,
+        left_label,
+        right_label,
+    } = diff_source.fetch()?;
 
     // Check if rebase is needed (once, reuse in UI)
     let rebase_notification = diff::check_rebase_needed()?;
@@ -85,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Start the interactive UI
     ui::run_app(
         file_changes,
+        file_meta,
         left_label,
         right_label,
         theme,

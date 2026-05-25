@@ -10,9 +10,51 @@ static DIFF_FILE_RE: LazyLock<Regex> =
 static HUNK_HEADER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^@@ -(\d+),?\d* \+(\d+),?\d* @@").unwrap());
 static ANSI_ESCAPE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[.*?m").unwrap());
+static SIMILARITY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^similarity index (\d+)%$").unwrap());
 
 pub type LineChange = (usize, String);
 pub type FileChanges = HashMap<String, (Vec<LineChange>, Vec<LineChange>)>;
+pub type FileMetaMap = HashMap<String, FileMeta>;
+
+/// Rename details captured from `git diff`'s `rename from`/`rename to` and
+/// `similarity index N%` headers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenameInfo {
+    pub from: String,
+    /// `0..=100`. A pure rename (no content changes) is reported as 100%.
+    pub similarity: u8,
+}
+
+/// Per-file metadata that lives alongside `FileChanges`. Currently just
+/// rename info, but kept as a struct so additional fields (mode change,
+/// binary, etc.) can land here without churning every call site.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileMeta {
+    pub rename: Option<RenameInfo>,
+}
+
+impl FileMeta {
+    /// `true` when git reported this file as a 100%-similarity rename, i.e.
+    /// a name change with no content delta.
+    pub fn is_pure_rename(&self) -> bool {
+        matches!(&self.rename, Some(r) if r.similarity >= 100)
+    }
+
+    /// `true` when git reported any rename (pure or partial).
+    pub fn is_rename(&self) -> bool {
+        self.rename.is_some()
+    }
+}
+
+/// Bundle returned by every `DiffSource::fetch*` call: the file diffs, the
+/// per-file metadata, and the labels for the left/right panes.
+pub struct DiffPayload {
+    pub files: FileChanges,
+    pub meta: FileMetaMap,
+    pub left_label: String,
+    pub right_label: String,
+}
 
 /// How to (re-)fetch the diff. Captures the user's CLI selection so the
 /// running UI can refresh itself without re-parsing argv.
@@ -27,7 +69,7 @@ pub enum DiffSource {
 
 impl DiffSource {
     /// Fetch the diff with git's default context (3 lines).
-    pub fn fetch(&self) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+    pub fn fetch(&self) -> Result<DiffPayload, Box<dyn Error>> {
         self.fetch_with_context(None)
     }
 
@@ -36,7 +78,7 @@ impl DiffSource {
     pub fn fetch_with_context(
         &self,
         context: Option<usize>,
-    ) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+    ) -> Result<DiffPayload, Box<dyn Error>> {
         match self {
             DiffSource::Uncommitted => get_uncommitted_changes(context),
             DiffSource::ToRef(r) => get_changes_to_ref(r, context),
@@ -85,7 +127,7 @@ pub fn get_commit_log() -> Result<Vec<CommitInfo>, Box<dyn Error>> {
 pub fn get_changes_for_commit(
     hash: &str,
     context: Option<usize>,
-) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+) -> Result<DiffPayload, Box<dyn Error>> {
     let cmd_args = build_git_args(
         "show",
         &["--format=", "-m", "--first-parent", hash],
@@ -104,32 +146,34 @@ pub fn get_changes_for_commit(
     let stdout = String::from_utf8(output.stdout)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
 
-    Ok((
-        parse_diff_output(&stdout)?,
-        format!("{}^", hash),
-        hash.to_string(),
-    ))
+    let (files, meta) = parse_diff_output(&stdout)?;
+    Ok(DiffPayload {
+        files,
+        meta,
+        left_label: format!("{}^", hash),
+        right_label: hash.to_string(),
+    })
 }
 
 // Get changes with completely custom diff args
 pub fn get_changes_with_args(
     args: &str,
     context: Option<usize>,
-) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+) -> Result<DiffPayload, Box<dyn Error>> {
     let args_vec: Vec<&str> = args.split_whitespace().collect();
     let diff_output = get_diff_output_with_args(&args_vec, context)?;
 
-    // Try to extract meaningful labels from the args
-    let left_label = extract_left_label(args);
-    let right_label = extract_right_label(args);
-
-    Ok((parse_diff_output(&diff_output)?, left_label, right_label))
+    let (files, meta) = parse_diff_output(&diff_output)?;
+    Ok(DiffPayload {
+        files,
+        meta,
+        left_label: extract_left_label(args),
+        right_label: extract_right_label(args),
+    })
 }
 
 // Compare uncommitted changes (git diff)
-pub fn get_uncommitted_changes(
-    context: Option<usize>,
-) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+pub fn get_uncommitted_changes(context: Option<usize>) -> Result<DiffPayload, Box<dyn Error>> {
     let mut diff_output = get_diff_output_with_args(&[], context)?;
 
     // `git diff` omits untracked files. Synthesize a diff against /dev/null
@@ -142,11 +186,13 @@ pub fn get_uncommitted_changes(
         }
     }
 
-    Ok((
-        parse_diff_output(&diff_output)?,
-        "HEAD".to_string(),
-        "Working Tree".to_string(),
-    ))
+    let (files, meta) = parse_diff_output(&diff_output)?;
+    Ok(DiffPayload {
+        files,
+        meta,
+        left_label: "HEAD".to_string(),
+        right_label: "Working Tree".to_string(),
+    })
 }
 
 fn list_untracked_files(repo_root: &str) -> Vec<String> {
@@ -179,13 +225,15 @@ fn diff_untracked_file(repo_root: &str, file: &str) -> Option<String> {
 pub fn get_changes_to_ref(
     reference: &str,
     context: Option<usize>,
-) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+) -> Result<DiffPayload, Box<dyn Error>> {
     let diff_output = get_diff_output_with_args(&[reference], context)?;
-    Ok((
-        parse_diff_output(&diff_output)?,
-        reference.to_string(),
-        "Working Tree".to_string(),
-    ))
+    let (files, meta) = parse_diff_output(&diff_output)?;
+    Ok(DiffPayload {
+        files,
+        meta,
+        left_label: reference.to_string(),
+        right_label: "Working Tree".to_string(),
+    })
 }
 
 // Compare two references (git diff <from>..<to>)
@@ -193,13 +241,15 @@ pub fn get_changes_between(
     from: &str,
     to: &str,
     context: Option<usize>,
-) -> Result<(FileChanges, String, String), Box<dyn Error>> {
+) -> Result<DiffPayload, Box<dyn Error>> {
     let diff_output = get_diff_output_with_args(&[&format!("{}..{}", from, to)], context)?;
-    Ok((
-        parse_diff_output(&diff_output)?,
-        from.to_string(),
-        to.to_string(),
-    ))
+    let (files, meta) = parse_diff_output(&diff_output)?;
+    Ok(DiffPayload {
+        files,
+        meta,
+        left_label: from.to_string(),
+        right_label: to.to_string(),
+    })
 }
 
 /// Snapshot of the current branch's relationship to its upstream, used by
@@ -309,13 +359,37 @@ fn extract_right_label(args: &str) -> String {
         .unwrap_or_else(|| "Target".to_string())
 }
 
-fn parse_diff_output(diff_output: &str) -> Result<FileChanges, Box<dyn Error>> {
+fn parse_diff_output(diff_output: &str) -> Result<(FileChanges, FileMetaMap), Box<dyn Error>> {
     let mut file_changes = HashMap::new();
+    let mut file_meta: FileMetaMap = HashMap::new();
     let mut current_file = String::new();
     let mut base_lines = Vec::new();
     let mut head_lines = Vec::new();
     let mut base_line_number = 1;
     let mut head_line_number = 1;
+    // Rename headers (`rename from`, `rename to`, `similarity index N%`) can
+    // appear in any order within a file's header block. Buffer them until the
+    // file's section ends, then assemble a `RenameInfo`.
+    let mut pending_rename_from: Option<String> = None;
+    let mut pending_similarity: Option<u8> = None;
+
+    let flush_meta = |file: &str,
+                      meta: &mut FileMetaMap,
+                      rename_from: &mut Option<String>,
+                      similarity: &mut Option<u8>| {
+        if let Some(from) = rename_from.take() {
+            // Default to 100% when git omits the similarity line (rare, but
+            // technically allowed). A bare `rename from`/`to` with no
+            // similarity header means "exact rename" in practice.
+            let sim = similarity.take().unwrap_or(100);
+            meta.entry(file.to_string()).or_default().rename = Some(RenameInfo {
+                from,
+                similarity: sim,
+            });
+        } else {
+            *similarity = None;
+        }
+    };
 
     for line in diff_output.lines() {
         let trimmed = line.trim_end();
@@ -331,6 +405,12 @@ fn parse_diff_output(diff_output: &str) -> Result<FileChanges, Box<dyn Error>> {
         // Handle file header
         if let Some(caps) = DIFF_FILE_RE.captures(trimmed_line.as_ref()) {
             if !current_file.is_empty() {
+                flush_meta(
+                    &current_file,
+                    &mut file_meta,
+                    &mut pending_rename_from,
+                    &mut pending_similarity,
+                );
                 file_changes.insert(
                     std::mem::take(&mut current_file),
                     (
@@ -363,7 +443,24 @@ fn parse_diff_output(diff_output: &str) -> Result<FileChanges, Box<dyn Error>> {
             continue;
         }
 
-        // Skip metadata lines
+        // Capture rename metadata before falling through to the generic skip.
+        if let Some(rest) = trimmed_line.strip_prefix("rename from ") {
+            pending_rename_from = Some(rest.to_string());
+            continue;
+        }
+        if trimmed_line.starts_with("rename to ") {
+            // The destination path is just `current_file` — no need to store it
+            // separately. Recording the presence of the header is enough.
+            continue;
+        }
+        if let Some(caps) = SIMILARITY_RE.captures(trimmed_line.as_ref()) {
+            if let Some(n) = caps.get(1).and_then(|m| m.as_str().parse::<u8>().ok()) {
+                pending_similarity = Some(n.min(100));
+            }
+            continue;
+        }
+
+        // Skip remaining metadata lines
         if trimmed_line.starts_with("index")
             || trimmed_line.starts_with("---")
             || trimmed_line.starts_with("+++")
@@ -372,11 +469,8 @@ fn parse_diff_output(diff_output: &str) -> Result<FileChanges, Box<dyn Error>> {
             || trimmed_line.starts_with("new mode")
             || trimmed_line.starts_with("old mode")
             || trimmed_line.starts_with("deleted file mode")
-            || trimmed_line.starts_with("rename from")
-            || trimmed_line.starts_with("rename to")
             || trimmed_line.starts_with("copy from")
             || trimmed_line.starts_with("copy to")
-            || trimmed_line.starts_with("similarity index")
             || trimmed_line.starts_with("dissimilarity index")
             || trimmed_line.starts_with("Binary files")
         {
@@ -400,10 +494,16 @@ fn parse_diff_output(diff_output: &str) -> Result<FileChanges, Box<dyn Error>> {
 
     // Add last file changes
     if !current_file.is_empty() {
+        flush_meta(
+            &current_file,
+            &mut file_meta,
+            &mut pending_rename_from,
+            &mut pending_similarity,
+        );
         file_changes.insert(current_file, (base_lines, head_lines));
     }
 
-    Ok(file_changes)
+    Ok((file_changes, file_meta))
 }
 
 #[derive(Clone)]
@@ -872,8 +972,16 @@ index abc..def 100644
 +    new();
  }
 ";
-        let changes = parse_diff_output(diff).unwrap();
+        let (changes, meta) = parse_diff_output(diff).unwrap();
         let (base, head) = changes.get("new.rs").expect("file should be present");
+        let rename = meta
+            .get("new.rs")
+            .and_then(|m| m.rename.as_ref())
+            .expect("rename metadata should be captured");
+        assert_eq!(rename.from, "old.rs");
+        assert_eq!(rename.similarity, 95);
+        assert!(!meta["new.rs"].is_pure_rename());
+        assert!(meta["new.rs"].is_rename());
         // Only actual diff lines should be present, no metadata leaking as context
         assert!(
             !base
@@ -892,6 +1000,48 @@ index abc..def 100644
     }
 
     #[test]
+    fn parse_captures_pure_rename() {
+        // A pure rename (100% similarity) has no hunks — git emits only the
+        // header block. The file should still show up in the map so the UI
+        // can list it (and optionally hide it via the rename filter).
+        let diff = "\
+diff --git a/old.txt b/new.txt
+similarity index 100%
+rename from old.txt
+rename to new.txt
+";
+        let (changes, meta) = parse_diff_output(diff).unwrap();
+        let (base, head) = changes.get("new.txt").expect("file should be present");
+        assert!(
+            base.is_empty() && head.is_empty(),
+            "pure rename has no hunks"
+        );
+        let m = meta.get("new.txt").expect("meta should be present");
+        assert!(m.is_pure_rename());
+        assert_eq!(m.rename.as_ref().unwrap().from, "old.txt");
+        assert_eq!(m.rename.as_ref().unwrap().similarity, 100);
+    }
+
+    #[test]
+    fn parse_non_rename_has_no_rename_meta() {
+        let diff = "\
+diff --git a/a.rs b/a.rs
+index abc..def 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1 +1 @@
+-x
++y
+";
+        let (_changes, meta) = parse_diff_output(diff).unwrap();
+        // Either no entry, or an entry with no rename info — both acceptable.
+        if let Some(m) = meta.get("a.rs") {
+            assert!(m.rename.is_none());
+            assert!(!m.is_pure_rename());
+        }
+    }
+
+    #[test]
     fn parse_skips_no_newline_marker() {
         let diff = "\
 diff --git a/file.rs b/file.rs
@@ -904,7 +1054,7 @@ index abc..def 100644
 +new line
 \\ No newline at end of file
 ";
-        let changes = parse_diff_output(diff).unwrap();
+        let (changes, _meta) = parse_diff_output(diff).unwrap();
         let (base, head) = changes.get("file.rs").expect("file should be present");
         assert!(
             !base.iter().any(|(_, l)| l.contains("No newline")),
@@ -924,7 +1074,7 @@ index abc..def 100644
 diff --git a/image.png b/image.png
 Binary files a/image.png and b/image.png differ
 ";
-        let changes = parse_diff_output(diff).unwrap();
+        let (changes, _meta) = parse_diff_output(diff).unwrap();
         // Binary file should have entry but no content lines
         if let Some((base, head)) = changes.get("image.png") {
             assert!(base.is_empty());
