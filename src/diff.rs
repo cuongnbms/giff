@@ -70,7 +70,8 @@ pub enum DiffSource {
     Commit(String),
     /// Diff the current branch against its fork point (`git merge-base
     /// <base> HEAD`), shown against the working tree. `None` resolves the
-    /// base lazily at fetch time (upstream, else `main`/`master`).
+    /// base lazily at fetch time (auto-detected parent branch, else
+    /// `main`/`master`).
     SinceFork {
         base: Option<String>,
     },
@@ -331,35 +332,53 @@ fn pick_nearest_base(candidates: &[(String, usize, bool)]) -> Option<String> {
 
 /// Count commits in a revision range (`git rev-list --count <range>`).
 /// Returns 0 if the command fails or the output is unparsable.
-fn rev_count(range: &str) -> Result<usize, Box<dyn Error>> {
-    let output = Command::new("git")
-        .args(["rev-list", "--count", range])
-        .output()?;
-    if !output.status.success() {
-        return Ok(0);
+/// Parse one `git for-each-ref --format='%(refname) %(refname:short)
+/// %(ahead-behind:HEAD)'` line into a scored fork candidate `(short_ref,
+/// divergence_distance, is_local)`. `divergence_distance` is the "behind"
+/// count — commits on HEAD since it forked from the ref. Returns `None` for
+/// lines that must be skipped: the current branch or its own remote-tracking
+/// ref, the `*/HEAD` alias, a branch HEAD has not diverged from (behind 0),
+/// or a malformed / non-branch line.
+fn parse_fork_candidate(line: &str, current: &str) -> Option<(String, usize, bool)> {
+    let mut parts = line.split_whitespace();
+    let full = parts.next()?;
+    let short = parts.next()?;
+    let _ahead = parts.next()?;
+    let behind: usize = parts.next()?.parse().ok()?;
+    if behind == 0 {
+        return None; // HEAD has not diverged from this branch
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .unwrap_or(0))
+    // Classify and extract the bare branch name from the full refname.
+    let (branch, is_local) = if let Some(b) = full.strip_prefix("refs/heads/") {
+        (b, true)
+    } else if let Some(rest) = full.strip_prefix("refs/remotes/") {
+        let (_, b) = rest.split_once('/')?;
+        (b, false)
+    } else {
+        return None;
+    };
+    // Skip the symbolic */HEAD alias, the current branch, and its own
+    // remote-tracking ref (otherwise unpushed commits make HEAD's own remote
+    // look like the fork parent).
+    if branch == "HEAD" || (!current.is_empty() && branch == current) {
+        return None;
+    }
+    Some((short.to_string(), behind, is_local))
 }
 
-/// Heuristically detect the branch the current branch forked from. Enumerates
-/// local and remote-tracking branches, excludes the current branch and its own
-/// remote-tracking refs, scores each by how recently HEAD diverged from it
-/// (`merge-base(candidate, HEAD)` then `rev-list --count <merge-base>..HEAD`),
-/// and returns the nearest via [`pick_nearest_base`]. `None` if no candidate
-/// qualifies.
-///
-/// Cost is two `git` subprocesses (`merge-base` + `rev-list`) per branch, run
-/// once when the `-b` diff is fetched; fine for typical repos, linear in the
-/// branch count.
+/// Heuristically detect the branch the current branch forked from: the branch
+/// HEAD diverged from most recently. A single `git for-each-ref` with the
+/// `%(ahead-behind:HEAD)` atom yields every branch's divergence distance in one
+/// pass (git >= 2.41), parsed line-by-line via [`parse_fork_candidate`] and
+/// ranked by [`pick_nearest_base`]. Returns `None` when no candidate qualifies
+/// — including older git that lacks the atom, where the command fails and
+/// [`default_fork_base`] falls back to `main`/`master`.
 fn detect_parent_base() -> Result<Option<String>, Box<dyn Error>> {
     let current = current_branch().unwrap_or_default();
     let output = Command::new("git")
         .args([
             "for-each-ref",
-            "--format=%(refname) %(refname:short)",
+            "--format=%(refname) %(refname:short) %(ahead-behind:HEAD)",
             "refs/heads",
             "refs/remotes",
         ])
@@ -368,41 +387,10 @@ fn detect_parent_base() -> Result<Option<String>, Box<dyn Error>> {
         return Ok(None);
     }
     let refs = String::from_utf8_lossy(&output.stdout);
-    let mut candidates: Vec<(String, usize, bool)> = Vec::new();
-    for line in refs.lines() {
-        let Some((full, short)) = line.trim().split_once(' ') else {
-            continue;
-        };
-        // Classify and extract the bare branch name.
-        let (branch, is_local) = if let Some(b) = full.strip_prefix("refs/heads/") {
-            (b, true)
-        } else if let Some(rest) = full.strip_prefix("refs/remotes/") {
-            match rest.split_once('/') {
-                Some((_, b)) => (b, false),
-                None => continue,
-            }
-        } else {
-            continue;
-        };
-        // Skip the symbolic origin/HEAD alias, the current branch, and its own
-        // remote-tracking refs (otherwise unpushed commits make HEAD's own
-        // remote look like the parent).
-        if branch == "HEAD" {
-            continue;
-        }
-        if !current.is_empty() && branch == current {
-            continue;
-        }
-        let fork = match merge_base(short, "HEAD") {
-            Ok(m) => m,
-            Err(_) => continue, // unrelated histories
-        };
-        let distance = rev_count(&format!("{}..HEAD", fork))?;
-        if distance == 0 {
-            continue; // HEAD has not diverged from this branch
-        }
-        candidates.push((short.to_string(), distance, is_local));
-    }
+    let candidates: Vec<(String, usize, bool)> = refs
+        .lines()
+        .filter_map(|line| parse_fork_candidate(line, &current))
+        .collect();
     Ok(pick_nearest_base(&candidates))
 }
 
@@ -1485,5 +1473,74 @@ Binary files a/image.png and b/image.png differ
             ("alpha".to_string(), 2, true),
         ];
         assert_eq!(pick_nearest_base(&candidates), Some("alpha".to_string()));
+    }
+
+    // ── parse_fork_candidate: for-each-ref line → scored candidate ──────
+
+    #[test]
+    fn parse_candidate_local_branch() {
+        // "<full> <short> <ahead> <behind>"; behind is the divergence distance.
+        assert_eq!(
+            parse_fork_candidate("refs/heads/feat/x feat/x 2 3", "feat/cur"),
+            Some(("feat/x".to_string(), 3, true))
+        );
+    }
+
+    #[test]
+    fn parse_candidate_remote_nested() {
+        assert_eq!(
+            parse_fork_candidate(
+                "refs/remotes/origin/feature/auth origin/feature/auth 1 5",
+                "feat/cur"
+            ),
+            Some(("origin/feature/auth".to_string(), 5, false))
+        );
+    }
+
+    #[test]
+    fn parse_candidate_excludes_current_local() {
+        assert_eq!(
+            parse_fork_candidate("refs/heads/feat/cur feat/cur 4 2", "feat/cur"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_candidate_excludes_own_remote() {
+        // HEAD's own remote-tracking ref must not be chosen as the parent.
+        assert_eq!(
+            parse_fork_candidate(
+                "refs/remotes/origin/feat/cur origin/feat/cur 0 2",
+                "feat/cur"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_candidate_excludes_head_alias() {
+        // origin/HEAD: short is "origin" but the bare name is HEAD.
+        assert_eq!(
+            parse_fork_candidate("refs/remotes/origin/HEAD origin 0 1", "feat/cur"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_candidate_excludes_undiverged() {
+        // behind == 0: HEAD has not diverged from this branch.
+        assert_eq!(
+            parse_fork_candidate("refs/heads/main main 0 0", "feat/cur"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_candidate_skips_malformed() {
+        assert_eq!(parse_fork_candidate("refs/heads/x x", "feat/cur"), None);
+        assert_eq!(
+            parse_fork_candidate("refs/stash stash 0 1", "feat/cur"),
+            None
+        );
     }
 }
