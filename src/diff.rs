@@ -72,7 +72,6 @@ pub enum DiffSource {
     /// <base> HEAD`), shown against the working tree. `None` resolves the
     /// base lazily at fetch time (upstream, else `main`/`master`).
     // Constructed by the -b/--branch CLI flag added in a later task.
-    #[allow(dead_code)]
     SinceFork {
         base: Option<String>,
     },
@@ -310,6 +309,34 @@ fn merge_base(base: &str, head: &str) -> Result<String, Box<dyn Error>> {
         return Err(format!("git merge-base {} {} produced no output", base, head).into());
     }
     Ok(fork)
+}
+
+/// Map parsed CLI inputs to a [`DiffSource`]. Precedence: custom diff args
+/// override everything; `--branch` (with an optional explicit base from
+/// `from`) beats positional refs; then two refs, one ref, or uncommitted.
+#[allow(dead_code)] // called from main in Task 3
+pub fn select_diff_source(
+    diff_args: Option<&str>,
+    branch: bool,
+    from: &str,
+    to: &str,
+) -> DiffSource {
+    if let Some(args) = diff_args {
+        DiffSource::CustomArgs(args.to_string())
+    } else if branch {
+        DiffSource::SinceFork {
+            base: (!from.is_empty()).then(|| from.to_string()),
+        }
+    } else if !from.is_empty() && !to.is_empty() {
+        DiffSource::Between {
+            from: from.to_string(),
+            to: to.to_string(),
+        }
+    } else if !from.is_empty() {
+        DiffSource::ToRef(from.to_string())
+    } else {
+        DiffSource::Uncommitted
+    }
 }
 
 // Compare two references (git diff <from>..<to>)
@@ -1248,5 +1275,60 @@ Binary files a/image.png and b/image.png differ
         let root = Path::new("/repo");
         let err = resolve_within_root(root, "").unwrap_err();
         assert!(err.to_string().contains("empty file path"));
+    }
+
+    // ── select_diff_source: CLI → DiffSource precedence ─────────────────
+
+    #[test]
+    fn select_branch_no_base_is_sincefork_none() {
+        assert_eq!(
+            select_diff_source(None, true, "", ""),
+            DiffSource::SinceFork { base: None }
+        );
+    }
+
+    #[test]
+    fn select_branch_with_base_is_sincefork_some() {
+        assert_eq!(
+            select_diff_source(None, true, "main", ""),
+            DiffSource::SinceFork {
+                base: Some("main".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn select_one_ref_is_toref() {
+        assert_eq!(
+            select_diff_source(None, false, "main", ""),
+            DiffSource::ToRef("main".to_string())
+        );
+    }
+
+    #[test]
+    fn select_two_refs_is_between() {
+        assert_eq!(
+            select_diff_source(None, false, "a", "b"),
+            DiffSource::Between {
+                from: "a".to_string(),
+                to: "b".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn select_no_args_is_uncommitted() {
+        assert_eq!(
+            select_diff_source(None, false, "", ""),
+            DiffSource::Uncommitted
+        );
+    }
+
+    #[test]
+    fn select_diff_args_wins_over_branch() {
+        assert_eq!(
+            select_diff_source(Some("--stat"), true, "x", "y"),
+            DiffSource::CustomArgs("--stat".to_string())
+        );
     }
 }
