@@ -73,6 +73,8 @@ The `c` keybinding in Diff mode invokes the [`claude`](https://docs.claude.com/e
 giff                        # uncommitted changes vs HEAD (includes untracked files)
 giff main feature-branch    # diff between two refs
 giff main                   # diff ref against working tree
+giff -b                     # diff current branch against its fork point (vs upstream)
+giff -b main                # ...against where the branch forked from main
 giff --theme light          # override theme
 giff -d "--stat"            # pass custom git diff args
 giff --auto-rebase          # auto-rebase if behind upstream, then open the UI
