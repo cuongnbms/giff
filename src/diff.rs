@@ -58,13 +58,24 @@ pub struct DiffPayload {
 
 /// How to (re-)fetch the diff. Captures the user's CLI selection so the
 /// running UI can refresh itself without re-parsing argv.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DiffSource {
     Uncommitted,
     ToRef(String),
-    Between { from: String, to: String },
+    Between {
+        from: String,
+        to: String,
+    },
     CustomArgs(String),
     Commit(String),
+    /// Diff the current branch against its fork point (`git merge-base
+    /// <base> HEAD`), shown against the working tree. `None` resolves the
+    /// base lazily at fetch time (upstream, else `main`/`master`).
+    // Constructed by the -b/--branch CLI flag added in a later task.
+    #[allow(dead_code)]
+    SinceFork {
+        base: Option<String>,
+    },
 }
 
 impl DiffSource {
@@ -85,6 +96,7 @@ impl DiffSource {
             DiffSource::Between { from, to } => get_changes_between(from, to, context),
             DiffSource::CustomArgs(a) => get_changes_with_args(a, context),
             DiffSource::Commit(h) => get_changes_for_commit(h, context),
+            DiffSource::SinceFork { base } => get_changes_since_fork(base.as_deref(), context),
         }
     }
 }
@@ -234,6 +246,70 @@ pub fn get_changes_to_ref(
         left_label: reference.to_string(),
         right_label: "Working Tree".to_string(),
     })
+}
+
+/// Compare the current branch against its fork point: `git merge-base
+/// <base> HEAD`, diffed against the working tree. `base = None` resolves
+/// the default base via [`default_fork_base`].
+pub fn get_changes_since_fork(
+    base: Option<&str>,
+    context: Option<usize>,
+) -> Result<DiffPayload, Box<dyn Error>> {
+    let base_ref = match base {
+        Some(b) => b.to_string(),
+        None => default_fork_base()?,
+    };
+    let fork = merge_base(&base_ref, "HEAD")?;
+    // Git object hashes are ASCII hex, so byte slicing is char-boundary safe.
+    let short = fork.get(..8).unwrap_or(&fork);
+    let diff_output = get_diff_output_with_args(&[&fork], context)?;
+    let (files, meta) = parse_diff_output(&diff_output)?;
+    Ok(DiffPayload {
+        files,
+        meta,
+        left_label: format!("{} (fork: {})", base_ref, short),
+        right_label: "Working Tree".to_string(),
+    })
+}
+
+/// Resolve the default base for fork-point diffs: the current branch's
+/// upstream if set, otherwise the first of `main`/`master` that exists.
+pub fn default_fork_base() -> Result<String, Box<dyn Error>> {
+    if let Some(upstream) = get_upstream_branch()? {
+        return Ok(upstream);
+    }
+    for name in ["main", "master"] {
+        let exists = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", name])
+            .output()?
+            .status
+            .success();
+        if exists {
+            return Ok(name.to_string());
+        }
+    }
+    Err("no upstream and no main/master found; specify a base: giff -b <ref>".into())
+}
+
+/// Best common ancestor of `base` and `head` (`git merge-base`).
+fn merge_base(base: &str, head: &str) -> Result<String, Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["merge-base", base, head])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "git merge-base {} {} failed: {}",
+            base,
+            head,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let fork = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if fork.is_empty() {
+        return Err(format!("git merge-base {} {} produced no output", base, head).into());
+    }
+    Ok(fork)
 }
 
 // Compare two references (git diff <from>..<to>)
