@@ -310,6 +310,23 @@ fn merge_base(base: &str, head: &str) -> Result<String, Box<dyn Error>> {
     Ok(fork)
 }
 
+/// Pick the most likely parent branch from scored candidates. Each entry is
+/// `(ref_name, divergence_distance, is_local)`. The branch with the smallest
+/// divergence distance (most recent fork) wins; ties prefer a local branch,
+/// then alphabetical order, for deterministic results.
+// wired into detect_parent_base in Task 6
+#[allow(dead_code)]
+fn pick_nearest_base(candidates: &[(String, usize, bool)]) -> Option<String> {
+    candidates
+        .iter()
+        .min_by(|a, b| {
+            a.1.cmp(&b.1) // smaller divergence distance first
+                .then(b.2.cmp(&a.2)) // local (true) before remote (false)
+                .then(a.0.cmp(&b.0)) // alphabetical
+        })
+        .map(|(name, _, _)| name.clone())
+}
+
 /// Map parsed CLI inputs to a [`DiffSource`]. Precedence: custom diff args
 /// override everything; `--branch` (with an optional explicit base from
 /// `from`) beats positional refs; then two refs, one ref, or uncommitted.
@@ -1339,5 +1356,55 @@ Binary files a/image.png and b/image.png differ
             select_diff_source(Some("--stat"), true, "x", "y"),
             DiffSource::CustomArgs("--stat".to_string())
         );
+    }
+
+    // ── pick_nearest_base: parent-branch ranking ────────────────────────
+
+    #[test]
+    fn pick_nearest_none_when_empty() {
+        let candidates: Vec<(String, usize, bool)> = vec![];
+        assert_eq!(pick_nearest_base(&candidates), None);
+    }
+
+    #[test]
+    fn pick_nearest_smallest_distance_wins() {
+        let candidates = vec![
+            ("origin/main".to_string(), 5, false),
+            ("feat/accounts".to_string(), 3, true),
+        ];
+        assert_eq!(
+            pick_nearest_base(&candidates),
+            Some("feat/accounts".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_nearest_tie_prefers_local() {
+        let candidates = vec![
+            ("origin/feat".to_string(), 3, false),
+            ("feat".to_string(), 3, true),
+        ];
+        assert_eq!(pick_nearest_base(&candidates), Some("feat".to_string()));
+    }
+
+    #[test]
+    fn pick_nearest_tie_remote_alphabetical() {
+        let candidates = vec![
+            ("origin/zeta".to_string(), 2, false),
+            ("origin/alpha".to_string(), 2, false),
+        ];
+        assert_eq!(
+            pick_nearest_base(&candidates),
+            Some("origin/alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_nearest_tie_local_alphabetical() {
+        let candidates = vec![
+            ("zeta".to_string(), 2, true),
+            ("alpha".to_string(), 2, true),
+        ];
+        assert_eq!(pick_nearest_base(&candidates), Some("alpha".to_string()));
     }
 }
