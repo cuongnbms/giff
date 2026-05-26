@@ -71,7 +71,6 @@ pub enum DiffSource {
     /// Diff the current branch against its fork point (`git merge-base
     /// <base> HEAD`), shown against the working tree. `None` resolves the
     /// base lazily at fetch time (upstream, else `main`/`master`).
-    // Constructed by the -b/--branch CLI flag added in a later task.
     SinceFork {
         base: Option<String>,
     },
@@ -1290,6 +1289,17 @@ Binary files a/image.png and b/image.png differ
     fn select_branch_with_base_is_sincefork_some() {
         assert_eq!(
             select_diff_source(None, true, "main", ""),
+            DiffSource::SinceFork {
+                base: Some("main".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn select_branch_ignores_second_positional() {
+        // `giff -b main feature` uses `main` as the base; `to` is dropped.
+        assert_eq!(
+            select_diff_source(None, true, "main", "feature"),
             DiffSource::SinceFork {
                 base: Some("main".to_string())
             }
