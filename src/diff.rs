@@ -270,11 +270,12 @@ pub fn get_changes_since_fork(
     })
 }
 
-/// Resolve the default base for fork-point diffs: the current branch's
-/// upstream if set, otherwise the first of `main`/`master` that exists.
+/// Resolve the default base for fork-point diffs: the auto-detected parent
+/// branch ([`detect_parent_base`]), else the first of `main`/`master` that
+/// exists, else an actionable error.
 pub fn default_fork_base() -> Result<String, Box<dyn Error>> {
-    if let Some(upstream) = get_upstream_branch()? {
-        return Ok(upstream);
+    if let Some(parent) = detect_parent_base()? {
+        return Ok(parent);
     }
     for name in ["main", "master"] {
         let exists = Command::new("git")
@@ -286,7 +287,10 @@ pub fn default_fork_base() -> Result<String, Box<dyn Error>> {
             return Ok(name.to_string());
         }
     }
-    Err("no upstream and no main/master found; specify a base: giff -b <ref>".into())
+    Err(
+        "could not detect a parent branch and no main/master found; specify a base: giff -b <ref>"
+            .into(),
+    )
 }
 
 /// Best common ancestor of `base` and `head` (`git merge-base`).
@@ -314,8 +318,6 @@ fn merge_base(base: &str, head: &str) -> Result<String, Box<dyn Error>> {
 /// `(ref_name, divergence_distance, is_local)`. The branch with the smallest
 /// divergence distance (most recent fork) wins; ties prefer a local branch,
 /// then alphabetical order, for deterministic results.
-// wired into detect_parent_base in Task 6
-#[allow(dead_code)]
 fn pick_nearest_base(candidates: &[(String, usize, bool)]) -> Option<String> {
     candidates
         .iter()
@@ -325,6 +327,83 @@ fn pick_nearest_base(candidates: &[(String, usize, bool)]) -> Option<String> {
                 .then(a.0.cmp(&b.0)) // alphabetical
         })
         .map(|(name, _, _)| name.clone())
+}
+
+/// Count commits in a revision range (`git rev-list --count <range>`).
+/// Returns 0 if the command fails or the output is unparsable.
+fn rev_count(range: &str) -> Result<usize, Box<dyn Error>> {
+    let output = Command::new("git")
+        .args(["rev-list", "--count", range])
+        .output()?;
+    if !output.status.success() {
+        return Ok(0);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0))
+}
+
+/// Heuristically detect the branch the current branch forked from. Enumerates
+/// local and remote-tracking branches, excludes the current branch and its own
+/// remote-tracking refs, scores each by how recently HEAD diverged from it
+/// (`merge-base(candidate, HEAD)` then `rev-list --count <merge-base>..HEAD`),
+/// and returns the nearest via [`pick_nearest_base`]. `None` if no candidate
+/// qualifies.
+///
+/// Cost is two `git` subprocesses (`merge-base` + `rev-list`) per branch, run
+/// once when the `-b` diff is fetched; fine for typical repos, linear in the
+/// branch count.
+fn detect_parent_base() -> Result<Option<String>, Box<dyn Error>> {
+    let current = current_branch().unwrap_or_default();
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname) %(refname:short)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let refs = String::from_utf8_lossy(&output.stdout);
+    let mut candidates: Vec<(String, usize, bool)> = Vec::new();
+    for line in refs.lines() {
+        let Some((full, short)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        // Classify and extract the bare branch name.
+        let (branch, is_local) = if let Some(b) = full.strip_prefix("refs/heads/") {
+            (b, true)
+        } else if let Some(rest) = full.strip_prefix("refs/remotes/") {
+            match rest.split_once('/') {
+                Some((_, b)) => (b, false),
+                None => continue,
+            }
+        } else {
+            continue;
+        };
+        // Skip the symbolic origin/HEAD alias, the current branch, and its own
+        // remote-tracking refs (otherwise unpushed commits make HEAD's own
+        // remote look like the parent).
+        if branch == "HEAD" {
+            continue;
+        }
+        if !current.is_empty() && branch == current {
+            continue;
+        }
+        let fork = match merge_base(short, "HEAD") {
+            Ok(m) => m,
+            Err(_) => continue, // unrelated histories
+        };
+        let distance = rev_count(&format!("{}..HEAD", fork))?;
+        if distance == 0 {
+            continue; // HEAD has not diverged from this branch
+        }
+        candidates.push((short.to_string(), distance, is_local));
+    }
+    Ok(pick_nearest_base(&candidates))
 }
 
 /// Map parsed CLI inputs to a [`DiffSource`]. Precedence: custom diff args
