@@ -24,6 +24,13 @@ struct Args {
     #[arg(short, long, help = "Auto-rebase if needed")]
     auto_rebase: bool,
 
+    #[arg(
+        short = 'b',
+        long,
+        help = "Diff the current branch against its fork point (vs upstream, or `-b <ref>`)"
+    )]
+    branch: bool,
+
     /// Color theme ("dark", "light", or a custom theme name)
     #[arg(short, long)]
     theme: Option<String>,
@@ -50,18 +57,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Pick the diff source based on arguments and fetch the initial diff.
-    let diff_source = if let Some(diff_args) = &args.diff_args {
-        diff::DiffSource::CustomArgs(diff_args.clone())
-    } else if !args.from.is_empty() && !args.to.is_empty() {
-        diff::DiffSource::Between {
-            from: args.from.clone(),
-            to: args.to.clone(),
-        }
-    } else if !args.from.is_empty() {
-        diff::DiffSource::ToRef(args.from.clone())
-    } else {
-        diff::DiffSource::Uncommitted
-    };
+    let diff_source =
+        diff::select_diff_source(args.diff_args.as_deref(), args.branch, &args.from, &args.to);
 
     let diff::DiffPayload {
         files: file_changes,

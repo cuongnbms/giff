@@ -314,7 +314,6 @@ fn merge_base(base: &str, head: &str) -> Result<String, Box<dyn Error>> {
 /// Map parsed CLI inputs to a [`DiffSource`]. Precedence: custom diff args
 /// override everything; `--branch` (with an optional explicit base from
 /// `from`) beats positional refs; then two refs, one ref, or uncommitted.
-#[allow(dead_code)] // called from main in Task 3
 pub fn select_diff_source(
     diff_args: Option<&str>,
     branch: bool,
