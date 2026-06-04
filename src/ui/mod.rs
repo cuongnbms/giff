@@ -15,6 +15,7 @@ pub use types::ViewMode;
 pub struct UiDefaults {
     pub view_mode: ViewMode,
     pub wrap_mode: bool,
+    pub file_tree_view: bool,
 }
 
 use crate::diff::{self, DiffSource, FileChanges, FileMetaMap};
@@ -127,6 +128,7 @@ pub fn run_app(
         full_file: false,
         wrap_mode: defaults.wrap_mode,
         hide_pure_renames: false,
+        file_tree_view: defaults.file_tree_view,
         pending_commit_message: None,
         show_commit_modal: false,
     };

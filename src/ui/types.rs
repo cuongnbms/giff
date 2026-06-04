@@ -83,6 +83,9 @@ pub struct App {
     /// When true, files that git reports as 100% renames (no content change)
     /// are hidden from the file list. Toggled with `R` in Diff mode.
     pub hide_pure_renames: bool,
+    /// When true, the file panel renders as an indented directory tree instead
+    /// of the flat sorted list. Toggled with `T` in Diff mode.
+    pub file_tree_view: bool,
     /// AI-generated commit message awaiting user confirmation. Shown via the
     /// commit modal; `None` means no commit flow is in progress.
     pub pending_commit_message: Option<String>,

@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let defaults = ui::UiDefaults {
         view_mode: config::resolve_view_mode(&cfg),
         wrap_mode: config::resolve_wrap(&cfg),
+        file_tree_view: config::resolve_file_tree(&cfg),
     };
     if !ui::is_valid_syntax_theme(&theme.syntax_theme) {
         eprintln!(

@@ -51,6 +51,88 @@ pub(super) fn visible_file_names(
     names
 }
 
+/// A single rendered row of the file-panel tree view. Directory rows are
+/// non-interactive labels; file rows carry the index back into `file_names`
+/// so selection (`current_file_idx`) maps to the right row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TreeRow {
+    Dir { label: String, depth: usize },
+    File { file_idx: usize, depth: usize },
+}
+
+/// Build an indented tree view from the already-sorted `file_names`.
+///
+/// Files are grouped under their directories. Single-child directory chains
+/// are compacted onto one row (e.g. `a/b/c`). A directory whose only child is
+/// a file is NOT compacted onto that file. `file_idx` in each `File` row is the
+/// index of that path in `file_names`.
+///
+/// # Correctness
+/// `file_names` **must be sorted** (lexicographic, as produced by
+/// `visible_file_names`). Unsorted input yields duplicate directory rows.
+pub(super) fn build_file_tree(file_names: &[String]) -> Vec<TreeRow> {
+    // Owned segment vectors back the slices passed down into `build_level`.
+    let segs: Vec<Vec<&str>> = file_names.iter().map(|p| p.split('/').collect()).collect();
+    let items: Vec<(usize, &[&str])> = segs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i, s.as_slice()))
+        .collect();
+    let mut rows = Vec::new();
+    build_level(&mut rows, &items, 0);
+    rows
+}
+
+/// Recursively emit rows for one directory level. `items` are
+/// `(file_idx, remaining_segments)` pairs sharing the same already-emitted
+/// ancestor prefix; the segment at this level is the first element of each
+/// item's remaining-segment slice, and the last segment of any item is its
+/// filename. `items` is assumed sorted.
+fn build_level(rows: &mut Vec<TreeRow>, items: &[(usize, &[&str])], depth: usize) {
+    let mut i = 0;
+    while i < items.len() {
+        let key = items[i].1[0];
+        let mut j = i;
+        while j < items.len() && items[j].1[0] == key {
+            j += 1;
+        }
+        let group = &items[i..j];
+        i = j;
+
+        // A single item with one remaining segment is a file at this level.
+        if group.len() == 1 && group[0].1.len() == 1 {
+            rows.push(TreeRow::File {
+                file_idx: group[0].0,
+                depth,
+            });
+            continue;
+        }
+
+        // Otherwise `key` is a directory. Strip the consumed segment and
+        // compact any single-child directory chain into the label.
+        // Invariant: within `group`, no entry can have one remaining segment
+        // alongside entries with two or more — git's tree model forbids a path
+        // component from being both a file and a directory at the same level. So
+        // the strip below never produces a zero-length slice we then index.
+        let mut label = key.to_string();
+        let mut cur: Vec<(usize, &[&str])> = group.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
+        loop {
+            let first = cur[0].1[0];
+            let all_same = cur.iter().all(|(_, s)| s[0] == first);
+            let any_file_here = cur.iter().any(|(_, s)| s.len() == 1);
+            if all_same && !any_file_here {
+                label.push('/');
+                label.push_str(first);
+                cur = cur.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
+            } else {
+                break;
+            }
+        }
+        rows.push(TreeRow::Dir { label, depth });
+        build_level(rows, &cur, depth + 1);
+    }
+}
+
 /// Map the `full_file` bool to the context-lines value passed to git.
 /// `None` keeps git's default 3-line context. The large value effectively
 /// asks for every line; it must stay within `i32` because git parses
@@ -951,6 +1033,19 @@ where
                             app.theme_cycle_idx = (app.theme_cycle_idx + 1) % app.theme_cycle.len();
                             app.theme = app.theme_cycle[app.theme_cycle_idx].clone();
                         }
+                        KeyCode::Char('T') => {
+                            if let AppMode::Diff = app.app_mode {
+                                app.file_tree_view = !app.file_tree_view;
+                                app.status_message = Some(
+                                    if app.file_tree_view {
+                                        "File panel: tree"
+                                    } else {
+                                        "File panel: list"
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                        }
                         KeyCode::Char('u') => {
                             // Toggle between unified and side-by-side view (only in diff mode)
                             if let AppMode::Diff = app.app_mode {
@@ -1322,9 +1417,189 @@ mod tests {
             full_file: false,
             wrap_mode: false,
             hide_pure_renames: false,
+            file_tree_view: false,
             pending_commit_message: None,
             show_commit_modal: false,
         }
+    }
+
+    fn file_rows(rows: &[TreeRow]) -> Vec<usize> {
+        rows.iter()
+            .filter_map(|r| match r {
+                TreeRow::File { file_idx, .. } => Some(*file_idx),
+                TreeRow::Dir { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tree_flat_files_no_dirs() {
+        let names = vec!["a.rs".to_string(), "b.rs".to_string()];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 1,
+                    depth: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_nested_dirs() {
+        let names = vec![
+            "README.md".to_string(),
+            "src/config.rs".to_string(),
+            "src/ui/render.rs".to_string(),
+            "src/ui/types.rs".to_string(),
+        ];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 0
+                },
+                TreeRow::Dir {
+                    label: "src".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 1,
+                    depth: 1
+                },
+                TreeRow::Dir {
+                    label: "ui".to_string(),
+                    depth: 1
+                },
+                TreeRow::File {
+                    file_idx: 2,
+                    depth: 2
+                },
+                TreeRow::File {
+                    file_idx: 3,
+                    depth: 2
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_compacts_single_child_chain() {
+        let names = vec!["a/b/c/x.rs".to_string(), "a/b/c/y.rs".to_string()];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::Dir {
+                    label: "a/b/c".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 1
+                },
+                TreeRow::File {
+                    file_idx: 1,
+                    depth: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_single_file_in_dir_not_compacted_past_file() {
+        // A directory whose only child is a FILE is not compacted onto the file.
+        let names = vec!["a/b.rs".to_string()];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::Dir {
+                    label: "a".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_mixed_siblings_stop_compaction() {
+        let names = vec!["a/b/c.rs".to_string(), "a/d.rs".to_string()];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::Dir {
+                    label: "a".to_string(),
+                    depth: 0
+                },
+                TreeRow::Dir {
+                    label: "b".to_string(),
+                    depth: 1
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 2
+                },
+                TreeRow::File {
+                    file_idx: 1,
+                    depth: 1
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_file_indices_are_exact_permutation() {
+        // Every file gets exactly one File row, mapping back to its index.
+        let names = vec![
+            "README.md".to_string(),
+            "src/a.rs".to_string(),
+            "src/sub/b.rs".to_string(),
+            "src/sub/c.rs".to_string(),
+        ];
+        let rows = build_file_tree(&names);
+        let mut idxs = file_rows(&rows);
+        idxs.sort();
+        assert_eq!(idxs, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn tree_empty_input() {
+        let names: Vec<String> = vec![];
+        let rows = build_file_tree(&names);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn tree_deep_single_file_chain_compacts_to_dir() {
+        let names = vec!["a/b/c/f.rs".to_string()];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::Dir {
+                    label: "a/b/c".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 1
+                },
+            ]
+        );
     }
 
     #[test]

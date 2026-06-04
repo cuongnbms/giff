@@ -13,6 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff::LineChange;
 
+use super::event_loop::{build_file_tree, TreeRow};
 use super::rebase::render_rebase_ui;
 use super::syntax::highlight_line_changes_split;
 use super::theme::Theme;
@@ -251,6 +252,11 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
     const FILE_LIST_CHROME_WIDTH: u16 = 4;
     let inner_width = area.width.saturating_sub(FILE_LIST_CHROME_WIDTH) as usize;
 
+    if app.file_tree_view {
+        render_file_tree(f, app, area, block, inner_width);
+        return;
+    }
+
     let items: Vec<ListItem> = app
         .file_names
         .iter()
@@ -314,6 +320,95 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
         list,
         area,
         &mut ratatui::widgets::ListState::default().with_selected(Some(app.current_file_idx)),
+    );
+}
+
+/// Render the file panel as an indented directory tree. Directory rows are
+/// dim, non-interactive labels; file rows show the basename plus the same
+/// stats/rename badges as the flat list. Selection (`current_file_idx`, an
+/// index into `file_names`) is mapped to the matching file row for highlight
+/// and auto-scroll.
+fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inner_width: usize) {
+    let t = &app.theme;
+    let rows = build_file_tree(&app.file_names);
+
+    // Map current_file_idx -> position of its File row in `rows`.
+    let mut selected_row: Option<usize> = None;
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(row_i, row)| match row {
+            TreeRow::Dir { label, depth } => {
+                let indent = "  ".repeat(*depth);
+                let max_label_width = inner_width.saturating_sub(indent.len());
+                let label_disp = truncate_tail(&format!("{}/", label), max_label_width);
+                ListItem::new(Line::from(Span::styled(
+                    format!("{}{}", indent, label_disp),
+                    Style::default().fg(t.fg_dim),
+                )))
+            }
+            TreeRow::File { file_idx, depth } => {
+                let file = &app.file_names[*file_idx];
+                let is_current = *file_idx == app.current_file_idx;
+                if is_current {
+                    selected_row = Some(row_i);
+                }
+                let name_style = if is_current {
+                    Style::default()
+                        .fg(t.fg_bright)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.fg_normal)
+                };
+
+                // Reserve room for a rename badge (` R`) so the file name and
+                // stats reflow correctly when the badge is present.
+                let rename_badge: Option<&str> = app.file_meta.get(file).and_then(|m| {
+                    if m.is_pure_rename() {
+                        Some(" R")
+                    } else if m.is_rename() {
+                        Some(" r")
+                    } else {
+                        None
+                    }
+                });
+                let badge_width = rename_badge.map(|s| s.len()).unwrap_or(0);
+
+                let (adds, dels) = count_file_changes(app, file);
+                let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
+
+                let indent = "  ".repeat(*depth);
+                let indent_width = indent.len();
+                let max_name_width = inner_width
+                    .saturating_sub(stats_width)
+                    .saturating_sub(badge_width)
+                    .saturating_sub(indent_width);
+
+                let (file_part, _) = split_path_for_display(file);
+                let (file_disp, _) = fit_file_and_dir(&file_part, "", max_name_width);
+
+                let mut spans = vec![Span::styled(format!("{}{}", indent, file_disp), name_style)];
+                if let Some(badge) = rename_badge {
+                    spans.push(Span::styled(
+                        badge.to_string(),
+                        Style::default().fg(t.fg_dim),
+                    ));
+                }
+                spans.extend(stat_spans);
+                ListItem::new(Line::from(spans))
+            }
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().bg(t.bg_selection))
+        .highlight_symbol("\u{258c} ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(selected_row),
     );
 }
 
@@ -1013,35 +1108,12 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
     let is_log = matches!(app.app_mode, AppMode::Log);
 
     let modal_width = 56u16;
-    let modal_height = 30u16;
-    let modal_area = centered_rect(modal_width, modal_height, area);
+    // Inner width excludes the two side borders; used to size separators.
+    let inner_width = modal_width.saturating_sub(2) as usize;
 
     // Dim the background behind the modal
     let dim_bg = Block::default().style(Style::default().bg(t.bg_modal_dim));
     f.render_widget(dim_bg, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(t.border_modal))
-        .style(Style::default().bg(t.bg_modal))
-        .title(Span::styled(
-            " Keybindings ",
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::from(vec![
-            Span::styled(" ", Style::default()),
-            Span::styled(" ? ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
-            Span::styled(" ", Style::default()),
-            Span::styled(" Esc ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
-            Span::styled(" to close ", Style::default().fg(t.fg_dim)),
-        ]));
-
-    f.render_widget(Clear, modal_area);
-    f.render_widget(&block, modal_area);
-
-    let inner = block.inner(modal_area);
-    let inner_width = inner.width as usize;
 
     let accent = t.accent;
     let fg_normal = t.fg_normal;
@@ -1138,6 +1210,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("R", "Hide pure renames from file list"),
             row("f", "Toggle full file / hunks view"),
             row("t", "Toggle dark / light theme"),
+            row("T", "Toggle file tree / list view"),
             row("c", "Commit (AI-generated message)"),
             row("r", "Enter rebase mode"),
             row("s", "Sync (pull --rebase, then push)"),
@@ -1150,6 +1223,33 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("?", "Toggle this help"),
         ]);
     }
+
+    // Size the modal to its content (plus borders); centered_rect clamps to
+    // the screen height so it never overflows on short terminals.
+    let modal_height = lines.len() as u16 + 2;
+    let modal_area = centered_rect(modal_width, modal_height, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_modal))
+        .style(Style::default().bg(t.bg_modal))
+        .title(Span::styled(
+            " Keybindings ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(" ? ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" ", Style::default()),
+            Span::styled(" Esc ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" to close ", Style::default().fg(t.fg_dim)),
+        ]));
+
+    f.render_widget(Clear, modal_area);
+    f.render_widget(&block, modal_area);
+
+    let inner = block.inner(modal_area);
 
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text).style(Style::default().bg(t.bg_modal));
