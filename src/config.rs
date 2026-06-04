@@ -10,10 +10,10 @@ pub struct Config {
     pub theme: Option<String>,
     /// Initial word-wrap state. Defaults to `true` when unset.
     pub wrap: Option<bool>,
-    /// Initial diff layout: `"side-by-side"` (default) or `"unified"`.
+    /// Initial diff layout: `"unified"` (default) or `"side-by-side"`.
     pub view_mode: Option<String>,
     /// Open the file panel in tree view instead of the flat list. Defaults to
-    /// `false` when unset.
+    /// `true` when unset.
     pub file_tree: Option<bool>,
     #[serde(default)]
     pub themes: HashMap<String, ThemeConfig>,
@@ -51,18 +51,18 @@ pub fn resolve_view_mode(config: &Config) -> ViewMode {
             other => {
                 eprintln!(
                     "Warning: unknown view_mode '{}' (expected \"side-by-side\" or \"unified\"), \
-                     falling back to side-by-side",
+                     falling back to unified",
                     other
                 );
-                ViewMode::SideBySide
+                ViewMode::Unified
             }
         },
-        None => ViewMode::SideBySide,
+        None => ViewMode::Unified,
     }
 }
 
 pub fn resolve_file_tree(config: &Config) -> bool {
-    config.file_tree.unwrap_or(false)
+    config.file_tree.unwrap_or(true)
 }
 
 pub fn resolve_theme(config: &Config, cli_theme: Option<&str>) -> Theme {
@@ -156,10 +156,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_view_mode_defaults_side_by_side() {
+    fn resolve_view_mode_defaults_unified() {
         assert!(matches!(
             resolve_view_mode(&empty_config()),
-            ViewMode::SideBySide
+            ViewMode::Unified
         ));
     }
 
@@ -207,7 +207,7 @@ mod tests {
             view_mode: Some("not-a-mode".to_string()),
             ..Default::default()
         };
-        assert!(matches!(resolve_view_mode(&cfg), ViewMode::SideBySide));
+        assert!(matches!(resolve_view_mode(&cfg), ViewMode::Unified));
     }
 
     #[test]
@@ -228,16 +228,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_file_tree_defaults_false() {
-        assert!(!resolve_file_tree(&empty_config()));
+    fn resolve_file_tree_defaults_true() {
+        assert!(resolve_file_tree(&empty_config()));
     }
 
     #[test]
     fn resolve_file_tree_honors_config() {
         let cfg = Config {
-            file_tree: Some(true),
+            file_tree: Some(false),
             ..Default::default()
         };
-        assert!(resolve_file_tree(&cfg));
+        assert!(!resolve_file_tree(&cfg));
     }
 }

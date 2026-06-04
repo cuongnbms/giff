@@ -160,8 +160,8 @@ theme = "your_custom_theme_name"
 
 # Initial UI defaults (all optional).
 wrap = true                  # word wrap on by default (set false to start unwrapped)
-view_mode = "side-by-side"   # or "unified"
-file_tree = false            # set true to open the file panel as a tree instead of a flat list
+view_mode = "unified"        # "unified" (default) or "side-by-side"
+file_tree = true             # file tree by default (set false for a flat list)
 
 [themes.your_custom_theme_name]
 base = "dark"
