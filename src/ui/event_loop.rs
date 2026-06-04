@@ -67,6 +67,10 @@ pub(super) enum TreeRow {
 /// are compacted onto one row (e.g. `a/b/c`). A directory whose only child is
 /// a file is NOT compacted onto that file. `file_idx` in each `File` row is the
 /// index of that path in `file_names`.
+///
+/// # Correctness
+/// `file_names` **must be sorted** (lexicographic, as produced by
+/// `visible_file_names`). Unsorted input yields duplicate directory rows.
 #[allow(dead_code)]
 pub(super) fn build_file_tree(file_names: &[String]) -> Vec<TreeRow> {
     // Owned segment vectors back the slices passed down into `build_level`.
@@ -83,8 +87,9 @@ pub(super) fn build_file_tree(file_names: &[String]) -> Vec<TreeRow> {
 
 /// Recursively emit rows for one directory level. `items` are
 /// `(file_idx, remaining_segments)` pairs sharing the same already-emitted
-/// ancestor prefix; the segment at this level is `segments[0]`, and the last
-/// segment of any item is its filename. `items` is assumed sorted.
+/// ancestor prefix; the segment at this level is the first element of each
+/// item's remaining-segment slice, and the last segment of any item is its
+/// filename. `items` is assumed sorted.
 #[allow(dead_code)]
 fn build_level(rows: &mut Vec<TreeRow>, items: &[(usize, &[&str])], depth: usize) {
     let mut i = 0;
@@ -108,6 +113,10 @@ fn build_level(rows: &mut Vec<TreeRow>, items: &[(usize, &[&str])], depth: usize
 
         // Otherwise `key` is a directory. Strip the consumed segment and
         // compact any single-child directory chain into the label.
+        // Invariant: within `group`, no entry can have one remaining segment
+        // alongside entries with two or more — git's tree model forbids a path
+        // component from being both a file and a directory at the same level. So
+        // the strip below never produces a zero-length slice we then index.
         let mut label = key.to_string();
         let mut cur: Vec<(usize, &[&str])> = group.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
         loop {
@@ -1561,6 +1570,25 @@ mod tests {
         let names: Vec<String> = vec![];
         let rows = build_file_tree(&names);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn tree_deep_single_file_chain_compacts_to_dir() {
+        let names = vec!["a/b/c/f.rs".to_string()];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::Dir {
+                    label: "a/b/c".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 1
+                },
+            ]
+        );
     }
 
     #[test]
