@@ -96,6 +96,7 @@ giff --auto-rebase          # auto-rebase if behind upstream, then open the UI
 | `u` | Toggle unified / side-by-side view |
 | `f` | Toggle full-file / hunks-only view |
 | `t` | Cycle themes (initial → dark → light) |
+| `T` | Toggle file tree / flat list in the file panel |
 | `c` | Commit with an AI-generated message (requires the `claude` CLI) |
 | `r` | Enter rebase mode |
 | `s` | Sync (`pull --rebase`, then `push`) |
@@ -160,6 +161,7 @@ theme = "your_custom_theme_name"
 # Initial UI defaults (all optional).
 wrap = true                  # word wrap on by default (set false to start unwrapped)
 view_mode = "side-by-side"   # or "unified"
+file_tree = false            # open file panel in tree view instead of flat list
 
 [themes.your_custom_theme_name]
 base = "dark"

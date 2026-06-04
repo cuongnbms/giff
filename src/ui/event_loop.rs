@@ -1033,6 +1033,19 @@ where
                             app.theme_cycle_idx = (app.theme_cycle_idx + 1) % app.theme_cycle.len();
                             app.theme = app.theme_cycle[app.theme_cycle_idx].clone();
                         }
+                        KeyCode::Char('T') => {
+                            if let AppMode::Diff = app.app_mode {
+                                app.file_tree_view = !app.file_tree_view;
+                                app.status_message = Some(
+                                    if app.file_tree_view {
+                                        "File panel: tree"
+                                    } else {
+                                        "File panel: list"
+                                    }
+                                    .to_string(),
+                                );
+                            }
+                        }
                         KeyCode::Char('u') => {
                             // Toggle between unified and side-by-side view (only in diff mode)
                             if let AppMode::Diff = app.app_mode {

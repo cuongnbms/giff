@@ -1233,6 +1233,7 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("R", "Hide pure renames from file list"),
             row("f", "Toggle full file / hunks view"),
             row("t", "Toggle dark / light theme"),
+            row("T", "Toggle file tree / list view"),
             row("c", "Commit (AI-generated message)"),
             row("r", "Enter rebase mode"),
             row("s", "Sync (pull --rebase, then push)"),
