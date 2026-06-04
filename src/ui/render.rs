@@ -340,8 +340,10 @@ fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inne
         .map(|(row_i, row)| match row {
             TreeRow::Dir { label, depth } => {
                 let indent = "  ".repeat(*depth);
+                let max_label_width = inner_width.saturating_sub(indent.len());
+                let label_disp = truncate_tail(&format!("{}/", label), max_label_width);
                 ListItem::new(Line::from(Span::styled(
-                    format!("{}{}/", indent, label),
+                    format!("{}{}", indent, label_disp),
                     Style::default().fg(t.fg_dim),
                 )))
             }
@@ -359,6 +361,8 @@ fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inne
                     Style::default().fg(t.fg_normal)
                 };
 
+                // Reserve room for a rename badge (` R`) so the file name and
+                // stats reflow correctly when the badge is present.
                 let rename_badge: Option<&str> = app.file_meta.get(file).and_then(|m| {
                     if m.is_pure_rename() {
                         Some(" R")
