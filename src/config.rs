@@ -12,6 +12,9 @@ pub struct Config {
     pub wrap: Option<bool>,
     /// Initial diff layout: `"side-by-side"` (default) or `"unified"`.
     pub view_mode: Option<String>,
+    /// Open the file panel in tree view instead of the flat list. Defaults to
+    /// `false` when unset.
+    pub file_tree: Option<bool>,
     #[serde(default)]
     pub themes: HashMap<String, ThemeConfig>,
 }
@@ -56,6 +59,10 @@ pub fn resolve_view_mode(config: &Config) -> ViewMode {
         },
         None => ViewMode::SideBySide,
     }
+}
+
+pub fn resolve_file_tree(config: &Config) -> bool {
+    config.file_tree.unwrap_or(false)
 }
 
 pub fn resolve_theme(config: &Config, cli_theme: Option<&str>) -> Theme {
@@ -218,5 +225,19 @@ mod tests {
         // Default is dark
         let t = resolve_theme(&empty_config(), None);
         assert!(t.is_dark);
+    }
+
+    #[test]
+    fn resolve_file_tree_defaults_false() {
+        assert!(!resolve_file_tree(&empty_config()));
+    }
+
+    #[test]
+    fn resolve_file_tree_honors_config() {
+        let cfg = Config {
+            file_tree: Some(true),
+            ..Default::default()
+        };
+        assert!(resolve_file_tree(&cfg));
     }
 }

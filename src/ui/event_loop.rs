@@ -1407,6 +1407,7 @@ mod tests {
             full_file: false,
             wrap_mode: false,
             hide_pure_renames: false,
+            file_tree_view: false,
             pending_commit_message: None,
             show_commit_modal: false,
         }
