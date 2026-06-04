@@ -28,6 +28,47 @@ fn file_list_offset(selected: usize, total: usize, visible_height: usize) -> usi
     }
 }
 
+/// File indices in the order they appear on screen: tree display order
+/// (folders-first) when the tree view is active, otherwise the natural
+/// `file_names` order. Used so file-pane navigation follows what the user sees.
+fn file_display_order(app: &App) -> Vec<usize> {
+    if app.file_tree_view {
+        build_file_tree(&app.file_names)
+            .into_iter()
+            .filter_map(|r| match r {
+                TreeRow::File { file_idx, .. } => Some(file_idx),
+                TreeRow::Dir { .. } => None,
+            })
+            .collect()
+    } else {
+        (0..app.file_names.len()).collect()
+    }
+}
+
+/// Move the file selection by `delta` rows in on-screen order (negative = up),
+/// clamping at the ends. No-op when there are no files.
+fn move_file_selection(app: &mut App, delta: isize) {
+    let order = file_display_order(app);
+    if order.is_empty() {
+        return;
+    }
+    let pos = order
+        .iter()
+        .position(|&i| i == app.current_file_idx)
+        .unwrap_or(0) as isize;
+    let new_pos = (pos + delta).clamp(0, order.len() as isize - 1) as usize;
+    app.current_file_idx = order[new_pos];
+}
+
+/// Select the first or last file in on-screen order. No-op when empty.
+fn select_edge_file(app: &mut App, last: bool) {
+    let order = file_display_order(app);
+    let target = if last { order.last() } else { order.first() };
+    if let Some(&idx) = target {
+        app.current_file_idx = idx;
+    }
+}
+
 /// Build the sorted, filter-applied file list shown in the Files pane.
 ///
 /// `hide_pure_renames` strips out files reported as 100%-similarity renames
@@ -857,9 +898,7 @@ where
                         KeyCode::Char('j') | KeyCode::Down => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    if app.current_file_idx + 1 < app.file_names.len() {
-                                        app.current_file_idx += 1;
-                                    }
+                                    move_file_selection(&mut app, 1);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -889,9 +928,7 @@ where
                         KeyCode::Char('k') | KeyCode::Up => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    if app.current_file_idx > 0 {
-                                        app.current_file_idx -= 1;
-                                    }
+                                    move_file_selection(&mut app, -1);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -918,8 +955,7 @@ where
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
                                     let page = terminal.size()?.height.saturating_sub(6) as usize;
-                                    app.current_file_idx = (app.current_file_idx + page)
-                                        .min(app.file_names.len().saturating_sub(1));
+                                    move_file_selection(&mut app, page as isize);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -957,8 +993,7 @@ where
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
                                     let page = terminal.size()?.height.saturating_sub(6) as usize;
-                                    app.current_file_idx =
-                                        app.current_file_idx.saturating_sub(page);
+                                    move_file_selection(&mut app, -(page as isize));
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -985,7 +1020,7 @@ where
                         KeyCode::Home => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    app.current_file_idx = 0;
+                                    select_edge_file(&mut app, false);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -1004,7 +1039,7 @@ where
                         KeyCode::End => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    app.current_file_idx = app.file_names.len().saturating_sub(1);
+                                    select_edge_file(&mut app, true);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -1280,17 +1315,11 @@ where
                             match app.app_mode {
                                 AppMode::Diff => {
                                     if mouse.column < file_list_width {
-                                        if !app.file_names.is_empty() {
-                                            if is_down {
-                                                app.current_file_idx = (app.current_file_idx
-                                                    + scroll_amount)
-                                                    .min(app.file_names.len() - 1);
-                                            } else {
-                                                app.current_file_idx = app
-                                                    .current_file_idx
-                                                    .saturating_sub(scroll_amount);
-                                            }
-                                        }
+                                        let delta = scroll_amount as isize;
+                                        move_file_selection(
+                                            &mut app,
+                                            if is_down { delta } else { -delta },
+                                        );
                                     } else if let Some(file) =
                                         app.file_names.get(app.current_file_idx)
                                     {
@@ -1671,6 +1700,71 @@ mod tests {
         let names: Vec<String> = vec![];
         let rows = build_file_tree(&names);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn move_file_selection_flat_follows_index_order() {
+        let mut app = make_app(vec!["a.rs", "b.rs", "c.rs"], vec![]);
+        app.file_tree_view = false;
+        app.current_file_idx = 0;
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 1);
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2);
+        // Clamps at the end.
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2);
+        move_file_selection(&mut app, -2);
+        assert_eq!(app.current_file_idx, 0);
+        // Clamps at the top.
+        move_file_selection(&mut app, -1);
+        assert_eq!(app.current_file_idx, 0);
+    }
+
+    #[test]
+    fn move_file_selection_tree_follows_display_order() {
+        // Sorted file_names: exceptions.py(0), migrations/0001.py(1),
+        // models.py(2), tests/test_a.py(3). Tree display order is folders-first:
+        // migrations file(1), tests file(3), exceptions(0), models(2).
+        let mut app = make_app(
+            vec![
+                "exceptions.py",
+                "migrations/0001.py",
+                "models.py",
+                "tests/test_a.py",
+            ],
+            vec![],
+        );
+        app.file_tree_view = true;
+        app.current_file_idx = 1; // first in display order
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 3); // tests file
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 0); // exceptions.py
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2); // models.py (last)
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2); // clamps at end
+        move_file_selection(&mut app, -3);
+        assert_eq!(app.current_file_idx, 1); // back to first
+    }
+
+    #[test]
+    fn select_edge_file_uses_display_order_in_tree() {
+        let mut app = make_app(
+            vec![
+                "exceptions.py",
+                "migrations/0001.py",
+                "models.py",
+                "tests/test_a.py",
+            ],
+            vec![],
+        );
+        app.file_tree_view = true;
+        select_edge_file(&mut app, false);
+        assert_eq!(app.current_file_idx, 1); // first visible file = migrations
+        select_edge_file(&mut app, true);
+        assert_eq!(app.current_file_idx, 2); // last visible file = models.py
     }
 
     #[test]
