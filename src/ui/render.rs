@@ -1108,35 +1108,12 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
     let is_log = matches!(app.app_mode, AppMode::Log);
 
     let modal_width = 56u16;
-    let modal_height = 30u16;
-    let modal_area = centered_rect(modal_width, modal_height, area);
+    // Inner width excludes the two side borders; used to size separators.
+    let inner_width = modal_width.saturating_sub(2) as usize;
 
     // Dim the background behind the modal
     let dim_bg = Block::default().style(Style::default().bg(t.bg_modal_dim));
     f.render_widget(dim_bg, area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(t.border_modal))
-        .style(Style::default().bg(t.bg_modal))
-        .title(Span::styled(
-            " Keybindings ",
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Line::from(vec![
-            Span::styled(" ", Style::default()),
-            Span::styled(" ? ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
-            Span::styled(" ", Style::default()),
-            Span::styled(" Esc ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
-            Span::styled(" to close ", Style::default().fg(t.fg_dim)),
-        ]));
-
-    f.render_widget(Clear, modal_area);
-    f.render_widget(&block, modal_area);
-
-    let inner = block.inner(modal_area);
-    let inner_width = inner.width as usize;
 
     let accent = t.accent;
     let fg_normal = t.fg_normal;
@@ -1246,6 +1223,33 @@ fn render_help_modal(f: &mut Frame, app: &App, area: Rect) {
             row("?", "Toggle this help"),
         ]);
     }
+
+    // Size the modal to its content (plus borders); centered_rect clamps to
+    // the screen height so it never overflows on short terminals.
+    let modal_height = lines.len() as u16 + 2;
+    let modal_area = centered_rect(modal_width, modal_height, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(t.border_modal))
+        .style(Style::default().bg(t.bg_modal))
+        .title(Span::styled(
+            " Keybindings ",
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled(" ? ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" ", Style::default()),
+            Span::styled(" Esc ", Style::default().fg(t.fg_badge).bg(t.fg_key)),
+            Span::styled(" to close ", Style::default().fg(t.fg_dim)),
+        ]));
+
+    f.render_widget(Clear, modal_area);
+    f.render_widget(&block, modal_area);
+
+    let inner = block.inner(modal_area);
 
     let text = Text::from(lines);
     let paragraph = Paragraph::new(text).style(Style::default().bg(t.bg_modal));
