@@ -13,6 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff::LineChange;
 
+use super::event_loop::{build_file_tree, TreeRow};
 use super::rebase::render_rebase_ui;
 use super::syntax::highlight_line_changes_split;
 use super::theme::Theme;
@@ -251,6 +252,11 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
     const FILE_LIST_CHROME_WIDTH: u16 = 4;
     let inner_width = area.width.saturating_sub(FILE_LIST_CHROME_WIDTH) as usize;
 
+    if app.file_tree_view {
+        render_file_tree(f, app, area, block, inner_width);
+        return;
+    }
+
     let items: Vec<ListItem> = app
         .file_names
         .iter()
@@ -314,6 +320,91 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
         list,
         area,
         &mut ratatui::widgets::ListState::default().with_selected(Some(app.current_file_idx)),
+    );
+}
+
+/// Render the file panel as an indented directory tree. Directory rows are
+/// dim, non-interactive labels; file rows show the basename plus the same
+/// stats/rename badges as the flat list. Selection (`current_file_idx`, an
+/// index into `file_names`) is mapped to the matching file row for highlight
+/// and auto-scroll.
+fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inner_width: usize) {
+    let t = &app.theme;
+    let rows = build_file_tree(&app.file_names);
+
+    // Map current_file_idx -> position of its File row in `rows`.
+    let mut selected_row: Option<usize> = None;
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(row_i, row)| match row {
+            TreeRow::Dir { label, depth } => {
+                let indent = "  ".repeat(*depth);
+                ListItem::new(Line::from(Span::styled(
+                    format!("{}{}/", indent, label),
+                    Style::default().fg(t.fg_dim),
+                )))
+            }
+            TreeRow::File { file_idx, depth } => {
+                let file = &app.file_names[*file_idx];
+                let is_current = *file_idx == app.current_file_idx;
+                if is_current {
+                    selected_row = Some(row_i);
+                }
+                let name_style = if is_current {
+                    Style::default()
+                        .fg(t.fg_bright)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.fg_normal)
+                };
+
+                let rename_badge: Option<&str> = app.file_meta.get(file).and_then(|m| {
+                    if m.is_pure_rename() {
+                        Some(" R")
+                    } else if m.is_rename() {
+                        Some(" r")
+                    } else {
+                        None
+                    }
+                });
+                let badge_width = rename_badge.map(|s| s.len()).unwrap_or(0);
+
+                let (adds, dels) = count_file_changes(app, file);
+                let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
+
+                let indent = "  ".repeat(*depth);
+                let indent_width = indent.len();
+                let max_name_width = inner_width
+                    .saturating_sub(stats_width)
+                    .saturating_sub(badge_width)
+                    .saturating_sub(indent_width);
+
+                let (file_part, _) = split_path_for_display(file);
+                let (file_disp, _) = fit_file_and_dir(&file_part, "", max_name_width);
+
+                let mut spans = vec![Span::styled(format!("{}{}", indent, file_disp), name_style)];
+                if let Some(badge) = rename_badge {
+                    spans.push(Span::styled(
+                        badge.to_string(),
+                        Style::default().fg(t.fg_dim),
+                    ));
+                }
+                spans.extend(stat_spans);
+                ListItem::new(Line::from(spans))
+            }
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(Style::default().bg(t.bg_selection))
+        .highlight_symbol("\u{258c} ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ratatui::widgets::ListState::default().with_selected(selected_row),
     );
 }
 

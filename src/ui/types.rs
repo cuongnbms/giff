@@ -85,7 +85,6 @@ pub struct App {
     pub hide_pure_renames: bool,
     /// When true, the file panel renders as an indented directory tree instead
     /// of the flat sorted list. Toggled with `T` in Diff mode.
-    #[allow(dead_code)]
     pub file_tree_view: bool,
     /// AI-generated commit message awaiting user confirmation. Shown via the
     /// commit modal; `None` means no commit flow is in progress.

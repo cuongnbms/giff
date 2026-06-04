@@ -54,7 +54,6 @@ pub(super) fn visible_file_names(
 /// A single rendered row of the file-panel tree view. Directory rows are
 /// non-interactive labels; file rows carry the index back into `file_names`
 /// so selection (`current_file_idx`) maps to the right row.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TreeRow {
     Dir { label: String, depth: usize },
@@ -71,7 +70,6 @@ pub(super) enum TreeRow {
 /// # Correctness
 /// `file_names` **must be sorted** (lexicographic, as produced by
 /// `visible_file_names`). Unsorted input yields duplicate directory rows.
-#[allow(dead_code)]
 pub(super) fn build_file_tree(file_names: &[String]) -> Vec<TreeRow> {
     // Owned segment vectors back the slices passed down into `build_level`.
     let segs: Vec<Vec<&str>> = file_names.iter().map(|p| p.split('/').collect()).collect();
@@ -90,7 +88,6 @@ pub(super) fn build_file_tree(file_names: &[String]) -> Vec<TreeRow> {
 /// ancestor prefix; the segment at this level is the first element of each
 /// item's remaining-segment slice, and the last segment of any item is its
 /// filename. `items` is assumed sorted.
-#[allow(dead_code)]
 fn build_level(rows: &mut Vec<TreeRow>, items: &[(usize, &[&str])], depth: usize) {
     let mut i = 0;
     while i < items.len() {
