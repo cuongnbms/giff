@@ -28,6 +28,47 @@ fn file_list_offset(selected: usize, total: usize, visible_height: usize) -> usi
     }
 }
 
+/// File indices in the order they appear on screen: tree display order
+/// (folders-first) when the tree view is active, otherwise the natural
+/// `file_names` order. Used so file-pane navigation follows what the user sees.
+fn file_display_order(app: &App) -> Vec<usize> {
+    if app.file_tree_view {
+        build_file_tree(&app.file_names)
+            .into_iter()
+            .filter_map(|r| match r {
+                TreeRow::File { file_idx, .. } => Some(file_idx),
+                TreeRow::Dir { .. } => None,
+            })
+            .collect()
+    } else {
+        (0..app.file_names.len()).collect()
+    }
+}
+
+/// Move the file selection by `delta` rows in on-screen order (negative = up),
+/// clamping at the ends. No-op when there are no files.
+fn move_file_selection(app: &mut App, delta: isize) {
+    let order = file_display_order(app);
+    if order.is_empty() {
+        return;
+    }
+    let pos = order
+        .iter()
+        .position(|&i| i == app.current_file_idx)
+        .unwrap_or(0) as isize;
+    let new_pos = (pos + delta).clamp(0, order.len() as isize - 1) as usize;
+    app.current_file_idx = order[new_pos];
+}
+
+/// Select the first or last file in on-screen order. No-op when empty.
+fn select_edge_file(app: &mut App, last: bool) {
+    let order = file_display_order(app);
+    let target = if last { order.last() } else { order.first() };
+    if let Some(&idx) = target {
+        app.current_file_idx = idx;
+    }
+}
+
 /// Build the sorted, filter-applied file list shown in the Files pane.
 ///
 /// `hide_pure_renames` strips out files reported as 100%-similarity renames
@@ -62,10 +103,11 @@ pub(super) enum TreeRow {
 
 /// Build an indented tree view from the already-sorted `file_names`.
 ///
-/// Files are grouped under their directories. Single-child directory chains
-/// are compacted onto one row (e.g. `a/b/c`). A directory whose only child is
-/// a file is NOT compacted onto that file. `file_idx` in each `File` row is the
-/// index of that path in `file_names`.
+/// Files are grouped under their directories, with directories sorted above
+/// files at each level. Single-child directory chains are compacted onto one
+/// row (e.g. `a/b/c`). A directory whose only child is a file is NOT compacted
+/// onto that file. `file_idx` in each `File` row is the index of that path in
+/// `file_names`.
 ///
 /// # Correctness
 /// `file_names` **must be sorted** (lexicographic, as produced by
@@ -88,7 +130,13 @@ pub(super) fn build_file_tree(file_names: &[String]) -> Vec<TreeRow> {
 /// ancestor prefix; the segment at this level is the first element of each
 /// item's remaining-segment slice, and the last segment of any item is its
 /// filename. `items` is assumed sorted.
+///
+/// Within a level, directories are emitted before files (each subset keeping
+/// its sorted order), matching common file explorers where folders sort above
+/// files.
 fn build_level(rows: &mut Vec<TreeRow>, items: &[(usize, &[&str])], depth: usize) {
+    // Split this level into contiguous same-key groups (input is sorted).
+    let mut groups: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i < items.len() {
         let key = items[i].1[0];
@@ -96,41 +144,51 @@ fn build_level(rows: &mut Vec<TreeRow>, items: &[(usize, &[&str])], depth: usize
         while j < items.len() && items[j].1[0] == key {
             j += 1;
         }
-        let group = &items[i..j];
+        groups.push((i, j));
         i = j;
-
-        // A single item with one remaining segment is a file at this level.
-        if group.len() == 1 && group[0].1.len() == 1 {
-            rows.push(TreeRow::File {
-                file_idx: group[0].0,
-                depth,
-            });
-            continue;
-        }
-
-        // Otherwise `key` is a directory. Strip the consumed segment and
-        // compact any single-child directory chain into the label.
-        // Invariant: within `group`, no entry can have one remaining segment
-        // alongside entries with two or more — git's tree model forbids a path
-        // component from being both a file and a directory at the same level. So
-        // the strip below never produces a zero-length slice we then index.
-        let mut label = key.to_string();
-        let mut cur: Vec<(usize, &[&str])> = group.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
-        loop {
-            let first = cur[0].1[0];
-            let all_same = cur.iter().all(|(_, s)| s[0] == first);
-            let any_file_here = cur.iter().any(|(_, s)| s.len() == 1);
-            if all_same && !any_file_here {
-                label.push('/');
-                label.push_str(first);
-                cur = cur.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
-            } else {
-                break;
-            }
-        }
-        rows.push(TreeRow::Dir { label, depth });
-        build_level(rows, &cur, depth + 1);
     }
+
+    // A single item with one remaining segment is a file at this level;
+    // anything else is a directory group.
+    let is_file = |&(s, e): &(usize, usize)| e - s == 1 && items[s].1.len() == 1;
+
+    // Directories first, then files — each in their existing sorted order.
+    for &(s, e) in groups.iter().filter(|g| !is_file(g)) {
+        emit_dir(rows, &items[s..e], depth);
+    }
+    for &(s, _) in groups.iter().filter(|g| is_file(g)) {
+        rows.push(TreeRow::File {
+            file_idx: items[s].0,
+            depth,
+        });
+    }
+}
+
+/// Emit a directory group (all items share the same first segment, and none is
+/// a bare file at this level). Strips the consumed segment and compacts any
+/// single-child directory chain into the label before recursing.
+///
+/// Invariant: within `group`, no entry can have one remaining segment alongside
+/// entries with two or more — git's tree model forbids a path component from
+/// being both a file and a directory at the same level. So the strip below
+/// never produces a zero-length slice we then index.
+fn emit_dir(rows: &mut Vec<TreeRow>, group: &[(usize, &[&str])], depth: usize) {
+    let mut label = group[0].1[0].to_string();
+    let mut cur: Vec<(usize, &[&str])> = group.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
+    loop {
+        let first = cur[0].1[0];
+        let all_same = cur.iter().all(|(_, s)| s[0] == first);
+        let any_file_here = cur.iter().any(|(_, s)| s.len() == 1);
+        if all_same && !any_file_here {
+            label.push('/');
+            label.push_str(first);
+            cur = cur.iter().map(|(idx, s)| (*idx, &s[1..])).collect();
+        } else {
+            break;
+        }
+    }
+    rows.push(TreeRow::Dir { label, depth });
+    build_level(rows, &cur, depth + 1);
 }
 
 /// Map the `full_file` bool to the context-lines value passed to git.
@@ -840,9 +898,7 @@ where
                         KeyCode::Char('j') | KeyCode::Down => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    if app.current_file_idx + 1 < app.file_names.len() {
-                                        app.current_file_idx += 1;
-                                    }
+                                    move_file_selection(&mut app, 1);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -872,9 +928,7 @@ where
                         KeyCode::Char('k') | KeyCode::Up => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    if app.current_file_idx > 0 {
-                                        app.current_file_idx -= 1;
-                                    }
+                                    move_file_selection(&mut app, -1);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -901,8 +955,7 @@ where
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
                                     let page = terminal.size()?.height.saturating_sub(6) as usize;
-                                    app.current_file_idx = (app.current_file_idx + page)
-                                        .min(app.file_names.len().saturating_sub(1));
+                                    move_file_selection(&mut app, page as isize);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -940,8 +993,7 @@ where
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
                                     let page = terminal.size()?.height.saturating_sub(6) as usize;
-                                    app.current_file_idx =
-                                        app.current_file_idx.saturating_sub(page);
+                                    move_file_selection(&mut app, -(page as isize));
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -968,7 +1020,7 @@ where
                         KeyCode::Home => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    app.current_file_idx = 0;
+                                    select_edge_file(&mut app, false);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -987,7 +1039,7 @@ where
                         KeyCode::End => match app.app_mode {
                             AppMode::Diff => match app.focused_pane {
                                 Pane::FileList => {
-                                    app.current_file_idx = app.file_names.len().saturating_sub(1);
+                                    select_edge_file(&mut app, true);
                                 }
                                 Pane::DiffContent => {
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
@@ -1208,15 +1260,45 @@ where
                                 if mouse.row >= INNER_TOP {
                                     let relative = (mouse.row - INNER_TOP) as usize;
                                     let visible_height = size.height.saturating_sub(4) as usize;
-                                    let offset = file_list_offset(
-                                        app.current_file_idx,
-                                        app.file_names.len(),
-                                        visible_height,
-                                    );
-                                    let target = offset + relative;
-                                    if target < app.file_names.len() {
-                                        app.current_file_idx = target;
-                                        app.focused_pane = Pane::FileList;
+                                    if app.file_tree_view {
+                                        // Tree mode: the visible rows include
+                                        // directory labels, so map the clicked
+                                        // row through the tree, not the flat
+                                        // file list. Clicking a directory row
+                                        // leaves the selection unchanged.
+                                        let tree = build_file_tree(&app.file_names);
+                                        let selected_row = tree
+                                            .iter()
+                                            .position(|r| {
+                                                matches!(
+                                                    r,
+                                                    TreeRow::File { file_idx, .. }
+                                                        if *file_idx == app.current_file_idx
+                                                )
+                                            })
+                                            .unwrap_or(0);
+                                        let offset = file_list_offset(
+                                            selected_row,
+                                            tree.len(),
+                                            visible_height,
+                                        );
+                                        if let Some(TreeRow::File { file_idx, .. }) =
+                                            tree.get(offset + relative)
+                                        {
+                                            app.current_file_idx = *file_idx;
+                                            app.focused_pane = Pane::FileList;
+                                        }
+                                    } else {
+                                        let offset = file_list_offset(
+                                            app.current_file_idx,
+                                            app.file_names.len(),
+                                            visible_height,
+                                        );
+                                        let target = offset + relative;
+                                        if target < app.file_names.len() {
+                                            app.current_file_idx = target;
+                                            app.focused_pane = Pane::FileList;
+                                        }
                                     }
                                 }
                                 continue;
@@ -1233,17 +1315,11 @@ where
                             match app.app_mode {
                                 AppMode::Diff => {
                                     if mouse.column < file_list_width {
-                                        if !app.file_names.is_empty() {
-                                            if is_down {
-                                                app.current_file_idx = (app.current_file_idx
-                                                    + scroll_amount)
-                                                    .min(app.file_names.len() - 1);
-                                            } else {
-                                                app.current_file_idx = app
-                                                    .current_file_idx
-                                                    .saturating_sub(scroll_amount);
-                                            }
-                                        }
+                                        let delta = scroll_amount as isize;
+                                        move_file_selection(
+                                            &mut app,
+                                            if is_down { delta } else { -delta },
+                                        );
                                     } else if let Some(file) =
                                         app.file_names.get(app.current_file_idx)
                                     {
@@ -1460,20 +1536,13 @@ mod tests {
             "src/ui/types.rs".to_string(),
         ];
         let rows = build_file_tree(&names);
+        // Directories sort above files at each level.
         assert_eq!(
             rows,
             vec![
-                TreeRow::File {
-                    file_idx: 0,
-                    depth: 0
-                },
                 TreeRow::Dir {
                     label: "src".to_string(),
                     depth: 0
-                },
-                TreeRow::File {
-                    file_idx: 1,
-                    depth: 1
                 },
                 TreeRow::Dir {
                     label: "ui".to_string(),
@@ -1486,6 +1555,56 @@ mod tests {
                 TreeRow::File {
                     file_idx: 3,
                     depth: 2
+                },
+                TreeRow::File {
+                    file_idx: 1,
+                    depth: 1
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_dirs_sort_above_files_at_each_level() {
+        // Files and directories interleave alphabetically in the sorted input,
+        // but the tree must list all directories first, then files.
+        let names = vec![
+            "exceptions.py".to_string(),      // 0  file
+            "migrations/0001.py".to_string(), // 1  dir
+            "models.py".to_string(),          // 2  file
+            "tests/test_a.py".to_string(),    // 3  dir
+        ];
+        let rows = build_file_tree(&names);
+        assert_eq!(
+            rows,
+            vec![
+                TreeRow::Dir {
+                    label: "migrations".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 1,
+                    depth: 1
+                },
+                TreeRow::Dir {
+                    label: "tests".to_string(),
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 3,
+                    depth: 1
+                },
+                TreeRow::File {
+                    file_idx: 0,
+                    depth: 0
+                },
+                TreeRow::File {
+                    file_idx: 2,
+                    depth: 0
                 },
             ]
         );
@@ -1581,6 +1700,71 @@ mod tests {
         let names: Vec<String> = vec![];
         let rows = build_file_tree(&names);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn move_file_selection_flat_follows_index_order() {
+        let mut app = make_app(vec!["a.rs", "b.rs", "c.rs"], vec![]);
+        app.file_tree_view = false;
+        app.current_file_idx = 0;
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 1);
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2);
+        // Clamps at the end.
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2);
+        move_file_selection(&mut app, -2);
+        assert_eq!(app.current_file_idx, 0);
+        // Clamps at the top.
+        move_file_selection(&mut app, -1);
+        assert_eq!(app.current_file_idx, 0);
+    }
+
+    #[test]
+    fn move_file_selection_tree_follows_display_order() {
+        // Sorted file_names: exceptions.py(0), migrations/0001.py(1),
+        // models.py(2), tests/test_a.py(3). Tree display order is folders-first:
+        // migrations file(1), tests file(3), exceptions(0), models(2).
+        let mut app = make_app(
+            vec![
+                "exceptions.py",
+                "migrations/0001.py",
+                "models.py",
+                "tests/test_a.py",
+            ],
+            vec![],
+        );
+        app.file_tree_view = true;
+        app.current_file_idx = 1; // first in display order
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 3); // tests file
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 0); // exceptions.py
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2); // models.py (last)
+        move_file_selection(&mut app, 1);
+        assert_eq!(app.current_file_idx, 2); // clamps at end
+        move_file_selection(&mut app, -3);
+        assert_eq!(app.current_file_idx, 1); // back to first
+    }
+
+    #[test]
+    fn select_edge_file_uses_display_order_in_tree() {
+        let mut app = make_app(
+            vec![
+                "exceptions.py",
+                "migrations/0001.py",
+                "models.py",
+                "tests/test_a.py",
+            ],
+            vec![],
+        );
+        app.file_tree_view = true;
+        select_edge_file(&mut app, false);
+        assert_eq!(app.current_file_idx, 1); // first visible file = migrations
+        select_edge_file(&mut app, true);
+        assert_eq!(app.current_file_idx, 2); // last visible file = models.py
     }
 
     #[test]
