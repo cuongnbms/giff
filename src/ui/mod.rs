@@ -26,12 +26,14 @@ use crossterm::{
 };
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use ratatui::{prelude::*, Terminal};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::mpsc;
 use std::{error::Error, io};
 
 use event_loop::run_ui;
+use syntax::HighlightCache;
 use types::*;
 
 /// Check if a syntax highlighting theme name is available in syntect.
@@ -131,6 +133,7 @@ pub fn run_app(
         file_tree_view: defaults.file_tree_view,
         pending_commit_message: None,
         show_commit_modal: false,
+        highlight_cache: RefCell::new(HighlightCache::default()),
     };
 
     // Watch the working tree for changes so we can auto-reload the diff.

@@ -1,6 +1,8 @@
 use crate::diff::{BranchStatus, CommitInfo, DiffSource, FileChanges, FileMetaMap};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
+use super::syntax::HighlightCache;
 use super::theme::Theme;
 
 pub enum AppMode {
@@ -91,6 +93,11 @@ pub struct App {
     pub pending_commit_message: Option<String>,
     /// Whether the commit confirmation modal is currently displayed.
     pub show_commit_modal: bool,
+    /// Per-render memoization of syntax-highlighted diff lines. Keyed by a
+    /// content + theme hash so scrolling reuses the result instead of
+    /// re-highlighting the whole file every frame. `RefCell` because the
+    /// render path holds `&App`.
+    pub highlight_cache: RefCell<HighlightCache>,
 }
 
 pub enum Pane {

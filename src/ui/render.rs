@@ -9,13 +9,15 @@ use ratatui::{
     Frame,
 };
 
+use std::cell::RefCell;
+
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::diff::LineChange;
 
 use super::event_loop::{build_file_tree, TreeRow};
 use super::rebase::render_rebase_ui;
-use super::syntax::highlight_line_changes_split;
+use super::syntax::HighlightCache;
 use super::theme::Theme;
 use super::types::*;
 
@@ -424,6 +426,7 @@ fn render_diff_pane(
     is_focused: bool,
     area: Rect,
     theme: &Theme,
+    cache: &RefCell<HighlightCache>,
 ) {
     let border_color = if is_focused {
         theme.border_focused
@@ -437,8 +440,6 @@ fn render_diff_pane(
     } else {
         Style::default().fg(theme.fg_dim)
     };
-
-    let (gutter_lines, content_lines) = highlight_line_changes_split(lines, filename, theme);
 
     let block = Block::default()
         // Placeholder title; populated after we know total visible row count.
@@ -460,7 +461,8 @@ fn render_diff_pane(
         };
         (rows, title_text)
     } else {
-        let rows = content_lines.len();
+        // Highlighting produces exactly one rendered row per input line.
+        let rows = lines.len();
         let title_text = if rows > visible_height {
             let max_scroll = rows.saturating_sub(visible_height);
             let pos = scroll.min(max_scroll);
@@ -481,12 +483,32 @@ fn render_diff_pane(
     let block = block.title(Span::styled(title_text, title_style));
     f.render_widget(block, area);
 
-    // ratatui Paragraph::scroll() accepts (u16, u16); clamp for content >65k rows.
-    let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
-
     if wrap_mode {
+        // Wrap mode scrolls in visual rows and lets ratatui do the wrapping, so
+        // we can't slice an arbitrary window by logical line. But we don't need
+        // the whole file either: feed ratatui only the logical lines up to the
+        // bottom of the viewport (highlighted incrementally) and let it wrap +
+        // scroll as usual. This keeps a file switch O(visible) instead of
+        // highlighting every line. Walk visual-row counts (cheap, no syntax
+        // work) to find that last line.
+        let pane_inner = inner.width as usize;
+        let needed_rows = scroll.saturating_add(visible_height);
+        let mut acc = 0usize;
+        let mut end = 0usize;
+        while end < lines.len() && acc < needed_rows {
+            acc += merged_line_rows(&lines[end], pane_inner);
+            end += 1;
+        }
+        // Overscan a couple of lines: ratatui word-wraps while `merged_line_rows`
+        // estimates by width, so the counts can differ by a row.
+        let end = end.saturating_add(2).min(lines.len());
+
         // Merge the gutter into each content line so wrap keeps line numbers on
-        // the first visual row. Continuation rows have no gutter.
+        // the first visual row; continuation rows have no gutter.
+        let (gutter_lines, content_lines) =
+            cache.borrow_mut().window(lines, filename, theme, 0, end);
+        // ratatui Paragraph::scroll() accepts (u16, u16); clamp for >65k rows.
+        let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
         let merged: Vec<Line<'static>> = gutter_lines
             .into_iter()
             .zip(content_lines)
@@ -504,6 +526,14 @@ fn render_diff_pane(
             f.render_widget(paragraph, inner);
         }
     } else {
+        // Non-wrap: copy only the visible window of highlighted rows so a
+        // scroll keypress is O(visible) instead of O(file). The slice already
+        // starts at `scroll`, so the paragraphs render at vertical offset 0.
+        let (gutter_lines, content_lines) =
+            cache
+                .borrow_mut()
+                .window(lines, filename, theme, scroll, visible_height);
+
         // Pin the line-number gutter + change marker (7 cols) so they stay
         // visible when the user scrolls the code horizontally.
         const GUTTER_WIDTH: u16 = 7;
@@ -523,12 +553,12 @@ fn render_diff_pane(
 
         let h_scroll_u16 = h_scroll.min(u16::MAX as usize) as u16;
 
-        let gutter_paragraph = Paragraph::new(Text::from(gutter_lines)).scroll((scroll_u16, 0));
+        let gutter_paragraph = Paragraph::new(Text::from(gutter_lines));
         f.render_widget(gutter_paragraph, gutter_area);
 
         if content_area.width > 0 {
             let content_paragraph =
-                Paragraph::new(Text::from(content_lines)).scroll((scroll_u16, h_scroll_u16));
+                Paragraph::new(Text::from(content_lines)).scroll((0, h_scroll_u16));
             f.render_widget(content_paragraph, content_area);
         }
     }
@@ -871,6 +901,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         is_focused,
         base_area,
         &app.theme,
+        &app.highlight_cache,
     );
     render_diff_pane(
         f,
@@ -883,6 +914,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         is_focused,
         head_area,
         &app.theme,
+        &app.highlight_cache,
     );
 }
 
@@ -955,6 +987,7 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         is_focused,
         area,
         &app.theme,
+        &app.highlight_cache,
     );
 }
 

@@ -1496,6 +1496,7 @@ mod tests {
             file_tree_view: false,
             pending_commit_message: None,
             show_commit_modal: false,
+            highlight_cache: std::cell::RefCell::new(crate::ui::syntax::HighlightCache::default()),
         }
     }
 

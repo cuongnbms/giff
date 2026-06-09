@@ -544,6 +544,72 @@ fn highlight_produces_colored_spans() {
     );
 }
 
+/// Regression benchmark for the diff render hot path. Ignored by default;
+/// run with `cargo test --release perf_render_hot_path -- --ignored --nocapture`.
+/// Confirms that opening a large diff and scrolling stay O(visible), i.e. that
+/// rendering never highlights the whole file up front.
+#[test]
+#[ignore]
+fn perf_render_hot_path() {
+    use super::render::merged_line_rows;
+    use super::syntax::HighlightCache;
+    use super::theme::Theme;
+    use std::time::Instant;
+
+    // ~2000-line diff (alternating changes + context), as stored on `App`.
+    let mut base = Vec::new();
+    let mut head = Vec::new();
+    for i in 1..=2000usize {
+        let code = format!("    let value_{i} = compute(some_function_call(arg_{i}), {i});");
+        if i % 2 == 0 {
+            base.push(lc(i, &format!("-{code}")));
+            head.push(lc(i, &format!("+{code} // changed")));
+        } else {
+            base.push(lc(i, &format!(" {code}")));
+            head.push(lc(i, &format!(" {code}")));
+        }
+    }
+    let theme = Theme::dark();
+    let unified = build_unified_lines(&base, &head);
+    const VISIBLE: usize = 50;
+    const PANE_W: usize = 80;
+
+    // Warm the global syntax/theme LazyLocks so their one-time load cost is
+    // excluded from the measurements.
+    let _ = HighlightCache::default().window(&[lc(1, " fn x() {}")], "warm.rs", &theme, 0, 1);
+
+    // File switch: a fresh cache highlights only the first screenful on demand
+    // (this is what used to highlight the whole file and freeze the UI).
+    let mut cache = HighlightCache::default();
+    let t = Instant::now();
+    let _ = cache.window(&unified, "big.rs", &theme, 0, VISIBLE);
+    let file_switch_us = t.elapsed().as_micros();
+
+    // Steady scroll: per frame rebuild lines, extend the cache by ~1 line, and
+    // slice the visible window — exactly as `render_diff_pane` does.
+    let t = Instant::now();
+    for i in 0..60usize {
+        let unified = build_unified_lines(&base, &head);
+        // The two O(n) width walks the wrap path also performs each frame.
+        let end = (0..unified.len())
+            .scan(0usize, |acc, j| {
+                *acc += merged_line_rows(&unified[j], PANE_W);
+                Some((j, *acc))
+            })
+            .find(|&(_, acc)| acc >= i + VISIBLE)
+            .map_or(unified.len(), |(j, _)| (j + 3).min(unified.len()));
+        let (_g, c) = cache.window(&unified, "big.rs", &theme, 0, end);
+        std::hint::black_box(c.len());
+    }
+    let per_frame_us = t.elapsed().as_micros() / 60;
+
+    eprintln!("lines={}", unified.len());
+    eprintln!(
+        "file switch (paint):  {file_switch_us} us  (highlight ~{VISIBLE} lines, not the file)"
+    );
+    eprintln!("steady scroll frame:  {per_frame_us} us");
+}
+
 #[test]
 fn highlight_gap_lines_are_empty() {
     use super::syntax::highlight_line_changes;
