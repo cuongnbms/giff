@@ -30,6 +30,10 @@ description = "Full CI check: lint + test"
 depends = ["lint", "test"]
 
 [tasks.install]
-description = "Install release binary to /usr/local/bin (requires sudo)"
+description = "Install release binary to ~/.local/bin (no sudo)"
 depends = ["build"]
-run = "sudo install -m 0755 target/release/giff /usr/local/bin/giff && echo 'installed: /usr/local/bin/giff'"
+run = """
+mkdir -p "$HOME/.local/bin"
+install -m 0755 target/release/giff "$HOME/.local/bin/giff"
+echo 'installed: '"$HOME"'/.local/bin/giff'
+"""
