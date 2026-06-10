@@ -60,6 +60,16 @@ fn move_file_selection(app: &mut App, delta: isize) {
     app.current_file_idx = order[new_pos];
 }
 
+/// Place the startup selection on the first file in on-screen order.
+///
+/// `file_names[0]` is the alphabetically-first path, but in tree view the
+/// folders-first sort renders root-level files *below* every folder, so leaving
+/// the selection at index 0 scrolls the file pane to the bottom on launch.
+/// Selecting the top-of-tree file instead lets the user review top-down.
+pub(super) fn select_initial_file(app: &mut App) {
+    select_edge_file(app, false);
+}
+
 /// Select the first or last file in on-screen order. No-op when empty.
 fn select_edge_file(app: &mut App, last: bool) {
     let order = file_display_order(app);
@@ -1748,6 +1758,27 @@ mod tests {
         assert_eq!(app.current_file_idx, 2); // clamps at end
         move_file_selection(&mut app, -3);
         assert_eq!(app.current_file_idx, 1); // back to first
+    }
+
+    #[test]
+    fn initial_selection_is_top_of_tree_not_index_zero() {
+        // Startup must land on the first *visible* row so the user reviews
+        // top-down. In tree view the folders-first sort pushes file_names[0]
+        // (alphabetically first, here `exceptions.py`) below the folders, so a
+        // naive `current_file_idx = 0` would scroll the pane to the bottom.
+        let mut app = make_app(
+            vec![
+                "exceptions.py",
+                "migrations/0001.py",
+                "models.py",
+                "tests/test_a.py",
+            ],
+            vec![],
+        );
+        app.file_tree_view = true;
+        app.current_file_idx = 0;
+        select_initial_file(&mut app);
+        assert_eq!(app.current_file_idx, 1); // migrations file = top of tree
     }
 
     #[test]

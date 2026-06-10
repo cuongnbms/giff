@@ -32,7 +32,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::{error::Error, io};
 
-use event_loop::run_ui;
+use event_loop::{run_ui, select_initial_file};
 use syntax::HighlightCache;
 use types::*;
 
@@ -97,7 +97,7 @@ pub fn run_app(
         theme_cycle.push(light);
     }
 
-    let app = App {
+    let mut app = App {
         file_changes,
         file_meta,
         left_label,
@@ -135,6 +135,11 @@ pub fn run_app(
         show_commit_modal: false,
         highlight_cache: RefCell::new(HighlightCache::default()),
     };
+
+    // Land the selection on the top-of-tree file so the file pane opens
+    // scrolled to the top (folders-first ordering otherwise pushes
+    // file_names[0] to the bottom).
+    select_initial_file(&mut app);
 
     // Watch the working tree for changes so we can auto-reload the diff.
     // The watcher is held in this scope so it stays alive for the UI's lifetime.
