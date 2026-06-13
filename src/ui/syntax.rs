@@ -11,7 +11,14 @@ use syntect::parsing::SyntaxSet;
 
 use super::theme::Theme;
 
-pub static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+// Diff lines are fed to `highlight_line` with their trailing newline stripped
+// (the unified-diff content carries no `\n`). The newline-aware syntax set
+// relies on that `\n` to fire end-of-line context pops, so without it a comment
+// or string context can leak into following lines — e.g. a `#` comment
+// containing an apostrophe turns every subsequent line into one flat comment
+// span. The `no_newlines` variant is built for exactly this line-without-`\n`
+// feeding, so use it to keep multi-line constructs correct.
+pub static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_no_newlines);
 pub static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 fn to_ratatui_color(c: highlighting::Color) -> Color {
@@ -368,6 +375,42 @@ fn cache_key(lines: &[(usize, String)], filename: &str, theme: &Theme) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `#` comment containing an apostrophe must not leak its context into
+    /// following lines. Regression test for the newline-handling bug: with a
+    /// newline-requiring syntax set and lines fed without a trailing `\n`, the
+    /// comment's end-of-line context pop never fired and every subsequent line
+    /// collapsed to a single comment-colored span.
+    #[test]
+    fn comment_with_apostrophe_does_not_bleed_into_next_lines() {
+        let theme = Theme::dark();
+        let lines: Vec<(usize, String)> = vec![
+            (
+                1,
+                "+# GitPython's Repo() expands paths, but mkdir() does not".to_string(),
+            ),
+            (
+                2,
+                "+GITOPS_CLONE_PATH = os.path.expanduser(env('PATH', default='/data'))".to_string(),
+            ),
+            (3, "+GITOPS_REPO_URL = env(".to_string()),
+        ];
+        let (_g, content) = highlight_line_changes_split(&lines, "gitops.py", &theme);
+
+        // The two code lines after the comment must be tokenized into multiple
+        // distinctly-colored spans, not rendered as one flat run.
+        for idx in [1usize, 2] {
+            let spans = &content[idx].spans;
+            let distinct: std::collections::HashSet<_> = spans.iter().map(|s| s.style.fg).collect();
+            assert!(
+                distinct.len() > 1,
+                "line {idx} should have multiple token colors, got {} span(s) all fg={:?}: {:?}",
+                spans.len(),
+                spans.first().map(|s| s.style.fg),
+                spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>(),
+            );
+        }
+    }
 
     fn sample_lines() -> Vec<(usize, String)> {
         vec![
