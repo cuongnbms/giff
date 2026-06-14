@@ -26,12 +26,24 @@ pub struct RenameInfo {
     pub similarity: u8,
 }
 
-/// Per-file metadata that lives alongside `FileChanges`. Currently just
-/// rename info, but kept as a struct so additional fields (mode change,
-/// binary, etc.) can land here without churning every call site.
+/// Add/delete status of a file as reported by git's `new file mode` /
+/// `deleted file mode` headers. Files that are merely modified (or pure
+/// renames, which carry no such header) stay `Modified`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileStatus {
+    #[default]
+    Modified,
+    Added,
+    Deleted,
+}
+
+/// Per-file metadata that lives alongside `FileChanges`. Currently rename
+/// info and add/delete status, but kept as a struct so additional fields
+/// (mode change, binary, etc.) can land here without churning every call site.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileMeta {
     pub rename: Option<RenameInfo>,
+    pub status: FileStatus,
 }
 
 impl FileMeta {
