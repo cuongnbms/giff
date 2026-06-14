@@ -13,7 +13,7 @@ use std::cell::RefCell;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::diff::LineChange;
+use crate::diff::{FileMeta, FileStatus, LineChange};
 
 use super::event_loop::{build_file_tree, TreeRow};
 use super::rebase::render_rebase_ui;
@@ -223,6 +223,26 @@ fn branch_status_spans<'a>(t: &Theme, bs: &crate::diff::BranchStatus) -> Vec<Spa
     spans
 }
 
+/// Pick the file-list badge for a file: red `D` for deletes, green `A` for
+/// new files, dim `R`/`r` for pure/partial renames, else none. Returns the
+/// badge text (including its leading space) and the style to draw it with.
+fn status_badge(meta: Option<&FileMeta>, t: &Theme) -> Option<(&'static str, Style)> {
+    let meta = meta?;
+    match meta.status {
+        FileStatus::Deleted => Some((" D", Style::default().fg(t.fg_removed))),
+        FileStatus::Added => Some((" A", Style::default().fg(t.fg_added))),
+        FileStatus::Modified => {
+            if meta.is_pure_rename() {
+                Some((" R", Style::default().fg(t.fg_dim)))
+            } else if meta.is_rename() {
+                Some((" r", Style::default().fg(t.fg_dim)))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     let is_focused = matches!(app.focused_pane, Pane::FileList);
@@ -274,18 +294,10 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(t.fg_normal)
             };
 
-            // Reserve room for a rename badge (` R`) so the file name and
-            // stats reflow correctly when the badge is present.
-            let rename_badge: Option<&str> = app.file_meta.get(file).and_then(|m| {
-                if m.is_pure_rename() {
-                    Some(" R")
-                } else if m.is_rename() {
-                    Some(" r")
-                } else {
-                    None
-                }
-            });
-            let badge_width = rename_badge.map(|s| s.len()).unwrap_or(0);
+            // Reserve room for a status badge (` D`/` A`/` R`) so the file
+            // name and stats reflow correctly when a badge is present.
+            let badge = status_badge(app.file_meta.get(file), t);
+            let badge_width = badge.map(|(s, _)| s.len()).unwrap_or(0);
 
             let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
             let max_name_width = inner_width
@@ -301,11 +313,8 @@ pub fn render_file_list(f: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(t.fg_dim),
                 ));
             }
-            if let Some(badge) = rename_badge {
-                spans.push(Span::styled(
-                    badge.to_string(),
-                    Style::default().fg(t.fg_dim),
-                ));
+            if let Some((text, style)) = badge {
+                spans.push(Span::styled(text.to_string(), style));
             }
             spans.extend(stat_spans);
 
@@ -363,18 +372,10 @@ fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inne
                     Style::default().fg(t.fg_normal)
                 };
 
-                // Reserve room for a rename badge (` R`) so the file name and
-                // stats reflow correctly when the badge is present.
-                let rename_badge: Option<&str> = app.file_meta.get(file).and_then(|m| {
-                    if m.is_pure_rename() {
-                        Some(" R")
-                    } else if m.is_rename() {
-                        Some(" r")
-                    } else {
-                        None
-                    }
-                });
-                let badge_width = rename_badge.map(|s| s.len()).unwrap_or(0);
+                // Reserve room for a status badge (` D`/` A`/` R`) so the file
+                // name and stats reflow correctly when a badge is present.
+                let badge = status_badge(app.file_meta.get(file), t);
+                let badge_width = badge.map(|(s, _)| s.len()).unwrap_or(0);
 
                 let (adds, dels) = count_file_changes(app, file);
                 let (stat_spans, stats_width) = build_file_stats(adds, dels, t);
@@ -390,11 +391,8 @@ fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inne
                 let (file_disp, _) = fit_file_and_dir(&file_part, "", max_name_width);
 
                 let mut spans = vec![Span::styled(format!("{}{}", indent, file_disp), name_style)];
-                if let Some(badge) = rename_badge {
-                    spans.push(Span::styled(
-                        badge.to_string(),
-                        Style::default().fg(t.fg_dim),
-                    ));
+                if let Some((text, style)) = badge {
+                    spans.push(Span::styled(text.to_string(), style));
                 }
                 spans.extend(stat_spans);
                 ListItem::new(Line::from(spans))
