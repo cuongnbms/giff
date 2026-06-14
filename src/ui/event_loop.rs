@@ -1417,6 +1417,7 @@ mod tests {
                 from: "old".to_string(),
                 similarity,
             }),
+            ..Default::default()
         }
     }
 

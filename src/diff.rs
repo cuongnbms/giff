@@ -657,15 +657,24 @@ fn parse_diff_output(diff_output: &str) -> Result<(FileChanges, FileMetaMap), Bo
             continue;
         }
 
+        // Record add/delete status onto the current file. The `diff --git`
+        // header always precedes these, so `current_file` is set.
+        if trimmed_line.starts_with("new file mode") {
+            file_meta.entry(current_file.clone()).or_default().status = FileStatus::Added;
+            continue;
+        }
+        if trimmed_line.starts_with("deleted file mode") {
+            file_meta.entry(current_file.clone()).or_default().status = FileStatus::Deleted;
+            continue;
+        }
+
         // Skip remaining metadata lines
         if trimmed_line.starts_with("index")
             || trimmed_line.starts_with("---")
             || trimmed_line.starts_with("+++")
             || trimmed_line.starts_with("@@")
-            || trimmed_line.starts_with("new file mode")
             || trimmed_line.starts_with("new mode")
             || trimmed_line.starts_with("old mode")
-            || trimmed_line.starts_with("deleted file mode")
             || trimmed_line.starts_with("copy from")
             || trimmed_line.starts_with("copy to")
             || trimmed_line.starts_with("dissimilarity index")
@@ -1554,5 +1563,60 @@ Binary files a/image.png and b/image.png differ
             parse_fork_candidate("refs/stash stash 0 1", "feat/cur"),
             None
         );
+    }
+
+    #[test]
+    fn parse_marks_deleted_file() {
+        let diff = "diff --git a/gone.txt b/gone.txt\n\
+deleted file mode 100644\n\
+index e69de29..0000000\n\
+--- a/gone.txt\n\
++++ /dev/null\n\
+@@ -1,2 +0,0 @@\n\
+-line one\n\
+-line two\n";
+        let (_files, meta) = parse_diff_output(diff).unwrap();
+        assert_eq!(meta.get("gone.txt").unwrap().status, FileStatus::Deleted);
+    }
+
+    #[test]
+    fn parse_marks_new_file() {
+        let diff = "diff --git a/fresh.txt b/fresh.txt\n\
+new file mode 100644\n\
+index 0000000..e69de29\n\
+--- /dev/null\n\
++++ b/fresh.txt\n\
+@@ -0,0 +1,2 @@\n\
++line one\n\
++line two\n";
+        let (_files, meta) = parse_diff_output(diff).unwrap();
+        assert_eq!(meta.get("fresh.txt").unwrap().status, FileStatus::Added);
+    }
+
+    #[test]
+    fn parse_pure_rename_stays_modified_status() {
+        let diff = "diff --git a/old.txt b/new.txt\n\
+similarity index 100%\n\
+rename from old.txt\n\
+rename to new.txt\n";
+        let (_files, meta) = parse_diff_output(diff).unwrap();
+        let m = meta.get("new.txt").unwrap();
+        assert_eq!(m.status, FileStatus::Modified);
+        assert!(m.is_pure_rename());
+    }
+
+    #[test]
+    fn parse_plain_edit_is_modified_status() {
+        let diff = "diff --git a/edit.txt b/edit.txt\n\
+index 1111111..2222222 100644\n\
+--- a/edit.txt\n\
++++ b/edit.txt\n\
+@@ -1,1 +1,1 @@\n\
+-before\n\
++after\n";
+        let (_files, meta) = parse_diff_output(diff).unwrap();
+        // A plain edit may have no meta entry at all; absent == default Modified.
+        let status = meta.get("edit.txt").map(|m| m.status).unwrap_or_default();
+        assert_eq!(status, FileStatus::Modified);
     }
 }
