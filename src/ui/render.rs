@@ -1730,6 +1730,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_badge_text_per_case() {
+        use crate::diff::RenameInfo;
+        let t = Theme::dark();
+        let pure = || {
+            Some(RenameInfo {
+                from: "old".to_string(),
+                similarity: 100,
+            })
+        };
+        let partial = || {
+            Some(RenameInfo {
+                from: "old".to_string(),
+                similarity: 50,
+            })
+        };
+        let text = |m: FileMeta| status_badge(Some(&m), &t).map(|(s, _)| s);
+
+        // Status badges
+        assert_eq!(
+            text(FileMeta {
+                status: FileStatus::Deleted,
+                rename: None,
+            }),
+            Some(" D")
+        );
+        assert_eq!(
+            text(FileMeta {
+                status: FileStatus::Added,
+                rename: None,
+            }),
+            Some(" A")
+        );
+
+        // Rename badges (status == Modified)
+        assert_eq!(
+            text(FileMeta {
+                status: FileStatus::Modified,
+                rename: pure(),
+            }),
+            Some(" R")
+        );
+        assert_eq!(
+            text(FileMeta {
+                status: FileStatus::Modified,
+                rename: partial(),
+            }),
+            Some(" r")
+        );
+
+        // Plain modification: no badge
+        assert_eq!(
+            text(FileMeta {
+                status: FileStatus::Modified,
+                rename: None,
+            }),
+            None
+        );
+
+        // Priority guard: status wins over a concurrent rename.
+        assert_eq!(
+            text(FileMeta {
+                status: FileStatus::Deleted,
+                rename: partial(),
+            }),
+            Some(" D")
+        );
+    }
+
+    #[test]
     fn test_truncate_path_no_truncation_needed() {
         assert_eq!(truncate_path("src/main.rs", 20), "src/main.rs");
     }
