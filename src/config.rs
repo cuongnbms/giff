@@ -65,8 +65,47 @@ pub fn resolve_file_tree(config: &Config) -> bool {
     config.file_tree.unwrap_or(true)
 }
 
+/// Detect whether the host terminal has a dark background.
+///
+/// Returns `Some(true)` for a dark background and `Some(false)` for a light one.
+/// Returns `None` when detection is unavailable — not a TTY, the terminal did
+/// not answer the OSC 11 query within the timeout, or `COLORFGBG` is unset.
+/// Callers fall back to the dark theme on `None`.
+///
+/// Must be called before the alternate screen / raw mode is entered, since it
+/// writes a query escape to the terminal and reads the reply from stdin.
+fn detect_terminal_is_dark() -> Option<bool> {
+    // `luma` is perceived brightness in 0.0 (black) ..= 1.0 (white).
+    match terminal_light::luma() {
+        Ok(luma) => Some(luma < 0.5),
+        Err(_) => None,
+    }
+}
+
 pub fn resolve_theme(config: &Config, cli_theme: Option<&str>) -> Theme {
-    let theme_name = cli_theme.or(config.theme.as_deref()).unwrap_or("dark");
+    resolve_theme_with(config, cli_theme, detect_terminal_is_dark)
+}
+
+/// Resolution order: `--theme` flag → config `theme` → terminal auto-detection.
+/// An unset theme, or an explicit `"auto"`, triggers `detect_is_dark`; any other
+/// name resolves to a built-in or a `[themes.<name>]` config table.
+fn resolve_theme_with(
+    config: &Config,
+    cli_theme: Option<&str>,
+    detect_is_dark: impl FnOnce() -> Option<bool>,
+) -> Theme {
+    let requested = cli_theme.or(config.theme.as_deref());
+
+    // Unset, or an explicit `auto`: pick dark/light from the terminal background.
+    if matches!(requested, None | Some("auto")) {
+        return match detect_is_dark() {
+            Some(false) => Theme::light(),
+            // Dark background, or detection failed — default to the dark theme.
+            Some(true) | None => Theme::dark(),
+        };
+    }
+
+    let theme_name = requested.expect("None handled by the auto branch above");
 
     if let Some(theme) = Theme::by_name(theme_name) {
         return theme;
@@ -100,9 +139,47 @@ mod tests {
     }
 
     #[test]
-    fn resolve_defaults_to_dark() {
-        let t = resolve_theme(&empty_config(), None);
+    fn resolve_defaults_to_auto_detect() {
+        // With no flag/config theme, the terminal background is detected.
+        let dark = resolve_theme_with(&empty_config(), None, || Some(true));
+        assert!(dark.is_dark);
+        let light = resolve_theme_with(&empty_config(), None, || Some(false));
+        assert!(!light.is_dark);
+    }
+
+    #[test]
+    fn resolve_auto_detection_failure_falls_back_to_dark() {
+        let t = resolve_theme_with(&empty_config(), None, || None);
         assert!(t.is_dark);
+    }
+
+    #[test]
+    fn resolve_explicit_auto_keyword_detects() {
+        let t = resolve_theme_with(&empty_config(), Some("auto"), || Some(false));
+        assert!(!t.is_dark);
+    }
+
+    #[test]
+    fn resolve_config_auto_keyword_detects() {
+        let t = resolve_theme_with(&config_with_theme("auto"), None, || Some(false));
+        assert!(!t.is_dark);
+    }
+
+    #[test]
+    fn resolve_cli_auto_overrides_config_theme() {
+        // An explicit `--theme auto` re-detects even when config pins a theme.
+        let config = config_with_theme("light");
+        let t = resolve_theme_with(&config, Some("auto"), || Some(true));
+        assert!(t.is_dark);
+    }
+
+    #[test]
+    fn resolve_explicit_theme_skips_detection() {
+        // A concrete theme name must never invoke the detector.
+        let t = resolve_theme_with(&config_with_theme("light"), None, || {
+            panic!("detector must not run for an explicit theme")
+        });
+        assert!(!t.is_dark);
     }
 
     #[test]
@@ -222,8 +299,8 @@ mod tests {
         let t = resolve_theme(&config, None);
         assert!(!t.is_dark);
 
-        // Default is dark
-        let t = resolve_theme(&empty_config(), None);
+        // With nothing set, fall back to detection (dark when it fails)
+        let t = resolve_theme_with(&empty_config(), None, || None);
         assert!(t.is_dark);
     }
 

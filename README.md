@@ -30,7 +30,7 @@
 - **Sync** — `pull --rebase` then `push` (with a remote picker when none is set as upstream)
 - **Commit log browser** — open the log, jump into any commit's diff, jump back
 - **AI commit messages** — generate a Conventional Commits message from the staged diff via the local `claude` CLI, then confirm before committing
-- **Dark & light themes** — built-in themes with full customization through config; press `t` to cycle
+- **Dark & light themes** — auto-detects your terminal's background on startup and picks the matching theme; full customization through config; press `t` to cycle
 - **Vim-style navigation** — keyboard-first with mouse scroll support
 - **Help overlay** — press `?` anywhere to see all keybindings in context
 
@@ -75,7 +75,7 @@ giff main feature-branch    # diff between two refs
 giff main                   # diff ref against working tree
 giff -b                     # diff current branch against its fork point (vs upstream)
 giff -b main                # ...against where the branch forked from main
-giff --theme light          # override theme
+giff --theme light          # override theme (omit to auto-detect from the terminal)
 giff -d "--stat"            # pass custom git diff args
 giff --auto-rebase          # auto-rebase if behind upstream, then open the UI
 ```
@@ -156,7 +156,7 @@ Path follows the platform's config dir (via the [`dirs`](https://crates.io/crate
 | Windows | `%APPDATA%\giff\config.toml` |
 
 ```toml
-theme = "your_custom_theme_name"
+theme = "your_custom_theme_name"   # "auto" (default — match the terminal), "dark", "light", or a custom name
 
 # Initial UI defaults (all optional).
 wrap = true                  # word wrap on by default (set false to start unwrapped)

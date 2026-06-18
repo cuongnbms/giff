@@ -31,7 +31,8 @@ struct Args {
     )]
     branch: bool,
 
-    /// Color theme ("dark", "light", or a custom theme name)
+    /// Color theme ("auto", "dark", "light", or a custom theme name).
+    /// Defaults to "auto", which matches the terminal's background.
     #[arg(short, long)]
     theme: Option<String>,
 }

@@ -59,7 +59,7 @@ The current `DiffSource` is stored on `App` so the UI can re-fetch on filesystem
 
 ### Themes
 
-Built-in `Theme::dark()` and `Theme::light()` live in `src/ui/theme.rs`. User themes are defined via `[themes.<name>]` tables in `config.toml`; `ThemeConfig::to_theme` fills any missing fields from the `base` (defaults to `dark`). Resolution order: `--theme` flag → `theme = "..."` in config → `dark`. The UI also maintains a `theme_cycle` (initial + dark + light, deduped) so `t` can rotate between them at runtime.
+Built-in `Theme::dark()` and `Theme::light()` live in `src/ui/theme.rs`. User themes are defined via `[themes.<name>]` tables in `config.toml`; `ThemeConfig::to_theme` fills any missing fields from the `base` (defaults to `dark`). Resolution order: `--theme` flag → `theme = "..."` in config → terminal auto-detection (falling back to `dark`). An unset theme — or an explicit `auto` (flag or config) — runs `config::detect_terminal_is_dark` (via the `terminal-light` crate, an OSC 11 query with a `COLORFGBG` fallback) and picks `dark`/`light` from the terminal background. Detection runs in `resolve_theme` **before** the alternate screen is entered, since it writes a query escape and reads the reply from stdin. The UI also maintains a `theme_cycle` (initial + dark + light, deduped) so `t` can rotate between them at runtime.
 
 Syntax highlighting is supplied by `syntect` (with `two-face` providing extra languages/themes). `is_valid_syntax_theme` warns on startup if the configured `syntax_theme` is missing — the UI falls back internally rather than crashing.
 
