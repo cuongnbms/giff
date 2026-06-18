@@ -97,8 +97,11 @@ pub fn run_app(
         theme_cycle.push(light);
     }
 
+    let full_content = diff::fetch_full_content(&diff_source);
+
     let mut app = App {
         file_changes,
+        full_content,
         file_meta,
         left_label,
         right_label,

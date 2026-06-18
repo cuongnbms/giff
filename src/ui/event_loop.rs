@@ -296,6 +296,14 @@ fn set_change_state(app: &mut App, state: ChangeState) {
     }
 }
 
+/// Re-fetch the full base/head text of every changed file from the current
+/// `diff_source`, used to prime syntax-highlight parse state. Must be called
+/// after `diff_source` and `file_changes` are updated so the priming source
+/// matches what is rendered.
+fn refresh_full_content(app: &mut App) {
+    app.full_content = diff::fetch_full_content(&app.diff_source);
+}
+
 /// Re-run the diff using `app.diff_source` and merge the new state into `app`,
 /// preserving the user's current file selection and scroll positions where
 /// possible. No-op (silent) if the new diff is identical to the current one.
@@ -355,6 +363,7 @@ fn reload_diff(app: &mut App) {
     app.left_label = payload.left_label;
     app.right_label = payload.right_label;
     app.branch_status = diff::branch_status().ok();
+    refresh_full_content(app);
     app.status_message = Some("Diff reloaded".to_string());
 }
 
@@ -381,6 +390,7 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
     app.right_label = payload.right_label;
     app.current_file_idx = 0;
     app.diff_source = source;
+    refresh_full_content(app);
     Ok(())
 }
 
@@ -1195,6 +1205,7 @@ where
                                         app.file_names = names;
                                         app.left_label = payload.left_label;
                                         app.right_label = payload.right_label;
+                                        refresh_full_content(&mut app);
                                         app.status_message = Some(
                                             if app.full_file {
                                                 "Full file: ON"
@@ -1473,6 +1484,7 @@ mod tests {
         }
         App {
             file_changes: HashMap::new(),
+            full_content: HashMap::new(),
             file_meta: HashMap::new(),
             left_label: String::new(),
             right_label: String::new(),

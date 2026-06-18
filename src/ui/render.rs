@@ -425,6 +425,7 @@ fn render_diff_pane(
     area: Rect,
     theme: &Theme,
     cache: &RefCell<HighlightCache>,
+    source: Option<&[String]>,
 ) {
     let border_color = if is_focused {
         theme.border_focused
@@ -503,8 +504,9 @@ fn render_diff_pane(
 
         // Merge the gutter into each content line so wrap keeps line numbers on
         // the first visual row; continuation rows have no gutter.
-        let (gutter_lines, content_lines) =
-            cache.borrow_mut().window(lines, filename, theme, 0, end);
+        let (gutter_lines, content_lines) = cache
+            .borrow_mut()
+            .window_src(lines, filename, theme, 0, end, source);
         // ratatui Paragraph::scroll() accepts (u16, u16); clamp for >65k rows.
         let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
         let merged: Vec<Line<'static>> = gutter_lines
@@ -530,7 +532,7 @@ fn render_diff_pane(
         let (gutter_lines, content_lines) =
             cache
                 .borrow_mut()
-                .window(lines, filename, theme, scroll, visible_height);
+                .window_src(lines, filename, theme, scroll, visible_height, source);
 
         // Pin the line-number gutter + change marker (7 cols) so they stay
         // visible when the user scrolls the code horizontally.
@@ -878,6 +880,13 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
     let h_scroll = *app.h_scroll_positions.get(current_file).unwrap_or(&0);
     let is_focused = matches!(app.focused_pane, Pane::DiffContent);
 
+    // Full base/head text for priming the highlighter's parse state, so
+    // multi-line constructs opened above the visible hunk are colored right.
+    let (base_src, head_src) = match app.full_content.get(current_file) {
+        Some((b, h)) => (Some(b.as_slice()), Some(h.as_slice())),
+        None => (None, None),
+    };
+
     let (aligned_base, aligned_head) = align_lines(base_lines, head_lines);
     // In wrap mode, pad each pair so both panes' visual rows stay aligned.
     // Use the smaller pane width for wrap math so both sides agree on counts.
@@ -900,6 +909,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         base_area,
         &app.theme,
         &app.highlight_cache,
+        base_src,
     );
     render_diff_pane(
         f,
@@ -913,11 +923,14 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         head_area,
         &app.theme,
         &app.highlight_cache,
+        head_src,
     );
 }
 
 /// Build unified diff lines by walking both lists in order.
-/// Context lines appear once; change blocks show removals then additions.
+/// Context lines appear once (labeled with the head line number so the
+/// sequence is monotonic in head numbering); change blocks show removals
+/// then additions.
 pub(super) fn build_unified_lines(
     base_lines: &[LineChange],
     head_lines: &[LineChange],
@@ -941,15 +954,20 @@ pub(super) fn build_unified_lines(
                 hi += 1;
             }
         } else {
-            // Context line — take from base (preferred), or head if base exhausted
-            if bi < base_lines.len() {
-                unified.push(base_lines[bi].clone());
-                bi += 1;
-                if hi < head_lines.len() {
-                    hi += 1;
-                }
-            } else if hi < head_lines.len() {
+            // Context line — identical text in both sides. Carry the HEAD line
+            // number (and advance both cursors) so the rendered sequence is
+            // monotonic in head numbering; this lets the syntax highlighter be
+            // primed from the head file's full text (multi-line constructs that
+            // open above the hunk). Falls back to base when head is exhausted.
+            if hi < head_lines.len() {
                 unified.push(head_lines[hi].clone());
+            } else if bi < base_lines.len() {
+                unified.push(base_lines[bi].clone());
+            }
+            if bi < base_lines.len() {
+                bi += 1;
+            }
+            if hi < head_lines.len() {
                 hi += 1;
             }
         }
@@ -973,6 +991,15 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
 
     let unified_lines = build_unified_lines(base_lines, head_lines);
 
+    // Unified interleaves both sides; prime from the head text (the "current"
+    // file). `build_unified_lines` labels context and `+` lines with head
+    // numbers, so those are forward-monotonic and index `head_src` correctly;
+    // `-` lines carry base numbers and are simply highlighted in place.
+    let head_src = app
+        .full_content
+        .get(current_file)
+        .map(|(_, h)| h.as_slice());
+
     let title = format!("{} vs {}", app.left_label, app.right_label);
     render_diff_pane(
         f,
@@ -986,6 +1013,7 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         area,
         &app.theme,
         &app.highlight_cache,
+        head_src,
     );
 }
 

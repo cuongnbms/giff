@@ -89,6 +89,46 @@ pub enum DiffSource {
     },
 }
 
+/// `--unified=N` value large enough to render any realistic file in full.
+/// Stays within `i32` (git parses `--unified` as a signed int and overflows
+/// past `i32::MAX`).
+pub const FULL_FILE_CONTEXT: usize = 1_000_000_000;
+
+/// Complete base/head text of each changed file, keyed by path. Each side is
+/// the file's full content as one `String` per line (no diff markers),
+/// contiguous from line 1, so index `i` is file line `i + 1`. Used to prime
+/// syntax-highlight parse state for multi-line constructs that open above a
+/// hunk (see `ui::syntax`).
+pub type FullContent = HashMap<String, (Vec<String>, Vec<String>)>;
+
+/// Fetch every changed file's complete base and head text via a full-context
+/// diff. Returns an empty map on any error (e.g. `CustomArgs` whose flags
+/// reject `--unified`), so callers degrade to no-priming behavior.
+pub fn fetch_full_content(source: &DiffSource) -> FullContent {
+    let payload = match source.fetch_with_context(Some(FULL_FILE_CONTEXT)) {
+        Ok(p) => p,
+        Err(_) => return HashMap::new(),
+    };
+    payload
+        .files
+        .into_iter()
+        .map(|(path, (base, head))| (path, (strip_markers(base), strip_markers(head))))
+        .collect()
+}
+
+/// Drop the leading diff marker (` `/`+`/`-`) from each line, yielding raw
+/// file text in line order. Full-context lines arrive contiguous from line 1,
+/// so the returned `Vec` is indexable by `line_number - 1`.
+fn strip_markers(lines: Vec<LineChange>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|(_, s)| match s.chars().next() {
+            Some(' ') | Some('+') | Some('-') => s[1..].to_string(),
+            _ => s,
+        })
+        .collect()
+}
+
 impl DiffSource {
     /// Fetch the diff with git's default context (3 lines).
     pub fn fetch(&self) -> Result<DiffPayload, Box<dyn Error>> {

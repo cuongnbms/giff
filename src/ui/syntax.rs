@@ -152,6 +152,16 @@ impl LineHighlighter {
         }
     }
 
+    /// Advance parse state over one raw source line without producing output.
+    /// Used to prime the highlighter with the file content preceding (or
+    /// skipped between) the diff lines, so multi-line constructs that open
+    /// outside the diff (docstrings, block comments) are tracked correctly.
+    fn prime(&mut self, raw: &str) {
+        if let LineHighlighter::Syntect { hl, .. } = self {
+            let _ = hl.highlight_line(raw, &SYNTAX_SET);
+        }
+    }
+
     /// Highlight one diff line, advancing parse state. `line_num == 0` marks a
     /// gap row (rendered empty, parse state untouched so it doesn't corrupt
     /// multi-line tracking).
@@ -238,6 +248,14 @@ impl LineHighlighter {
 /// slots covers the current file plus headroom for the previous one.
 const HIGHLIGHT_CACHE_CAP: usize = 4;
 
+/// Upper bound on how many preceding source lines are fed to the highlighter
+/// to recover parse state before a hunk. Priming costs roughly one
+/// highlight-per-line, so this caps the worst-case first-paint work when a
+/// change sits deep in a large file. Comfortably covers real-world banners,
+/// license headers, and docstrings; a multi-line construct spanning more than
+/// this many lines degrades to the (pre-fix) unprimed behavior.
+const MAX_PRIME_LINES: usize = 2000;
+
 struct HighlightEntry {
     key: u64,
     /// Resumable highlighter, kept so the file can be highlighted incrementally
@@ -245,6 +263,10 @@ struct HighlightEntry {
     hl: Option<LineHighlighter>,
     /// Number of source lines highlighted so far (`gutter`/`content` length).
     done: usize,
+    /// Highest source line number whose parse state has been consumed (via a
+    /// diff line or priming). Lets `ensure_upto` feed only the gap before the
+    /// next diff line, and never rewind on out-of-order line numbers.
+    fed_upto: usize,
     gutter: Vec<Line<'static>>,
     content: Vec<Line<'static>>,
 }
@@ -290,8 +312,9 @@ impl HighlightCache {
         filename: &str,
         theme: &Theme,
         upto: usize,
+        source: Option<&[String]>,
     ) -> usize {
-        let key = cache_key(lines, filename, theme);
+        let key = cache_key(lines, filename, theme, source);
         let idx = match self.entries.iter().position(|e| e.key == key) {
             Some(i) => i,
             None => {
@@ -306,6 +329,7 @@ impl HighlightCache {
                     key,
                     hl: Some(LineHighlighter::new(filename, theme)),
                     done: 0,
+                    fed_upto: 0,
                     gutter: Vec::new(),
                     content: Vec::new(),
                 });
@@ -318,9 +342,30 @@ impl HighlightCache {
         if e.done < target {
             if let Some(hl) = e.hl.as_mut() {
                 for (num, line) in &lines[e.done..target] {
+                    // Before highlighting a diff line, feed the source lines
+                    // that precede it but were elided from the diff, so parse
+                    // state (open strings / block comments) is correct. Only
+                    // when the line number advances past what's already been
+                    // consumed; out-of-order numbers (unified `-` lines, gap
+                    // rows) never rewind state. The fed span is capped so a
+                    // change deep in a huge file can't freeze the first paint.
+                    if *num > e.fed_upto + 1 {
+                        if let Some(src) = source {
+                            let to = (*num - 1).min(src.len()); // exclusive, 0-based
+                            let from = e.fed_upto.max(to.saturating_sub(MAX_PRIME_LINES));
+                            if from < to {
+                                for raw in &src[from..to] {
+                                    hl.prime(raw);
+                                }
+                            }
+                        }
+                    }
                     let (g, c) = hl.next(*num, line);
                     e.gutter.push(g);
                     e.content.push(c);
+                    if *num > e.fed_upto {
+                        e.fed_upto = *num;
+                    }
                 }
                 e.done = target;
                 if e.done == lines.len() {
@@ -334,6 +379,9 @@ impl HighlightCache {
     /// Clone the `[start, start+len)` window of highlighted lines, highlighting
     /// up to that point on demand. Each frame copies only the visible rows, so
     /// scrolling is O(visible). `start`/`len` are clamped to the line count.
+    /// Convenience wrapper around `window_src` with no priming source. Used by
+    /// tests and benchmarks; the render path always calls `window_src`.
+    #[cfg(test)]
     pub fn window(
         &mut self,
         lines: &[(usize, String)],
@@ -342,7 +390,23 @@ impl HighlightCache {
         start: usize,
         len: usize,
     ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-        let idx = self.ensure_upto(lines, filename, theme, start.saturating_add(len));
+        self.window_src(lines, filename, theme, start, len, None)
+    }
+
+    /// Like `window`, but `source` is the full file text for the rendered
+    /// side (one entry per line, contiguous from line 1). When present, parse
+    /// state is primed from it so multi-line constructs opened above the
+    /// visible hunk are highlighted correctly.
+    pub fn window_src(
+        &mut self,
+        lines: &[(usize, String)],
+        filename: &str,
+        theme: &Theme,
+        start: usize,
+        len: usize,
+        source: Option<&[String]>,
+    ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+        let idx = self.ensure_upto(lines, filename, theme, start.saturating_add(len), source);
         let e = &self.entries[idx];
         let total = e.content.len();
         let s = start.min(total);
@@ -354,8 +418,18 @@ impl HighlightCache {
 /// Hash the inputs that determine highlight output. Theme is reduced to the
 /// fields the highlighter actually reads (syntect theme + the gutter/marker
 /// colors baked into the spans).
-fn cache_key(lines: &[(usize, String)], filename: &str, theme: &Theme) -> u64 {
+fn cache_key(
+    lines: &[(usize, String)],
+    filename: &str,
+    theme: &Theme,
+    source: Option<&[String]>,
+) -> u64 {
     let mut h = DefaultHasher::new();
+    // Priming changes the produced colors, so an entry highlighted without a
+    // source must not be reused once one is available. The line count is a
+    // cheap, sufficient fingerprint: the source is deterministic from the
+    // diff state, which already changes `lines` (and thus the key) on edits.
+    source.map(|s| s.len()).hash(&mut h);
     filename.hash(&mut h);
     theme.syntax_theme.hash(&mut h);
     theme.is_dark.hash(&mut h);
@@ -410,6 +484,116 @@ mod tests {
                 spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>(),
             );
         }
+    }
+
+    /// A hunk whose lines sit inside a triple-quoted docstring opened ABOVE
+    /// the diff must be highlighted as a string once the preceding file lines
+    /// are supplied as priming source — not as loose comments/code.
+    #[test]
+    fn priming_source_fixes_construct_opened_above_the_hunk() {
+        let theme = Theme::dark();
+        // Diff shows only lines 4-5; the `"""` opened at line 1 is off-diff.
+        let lines: Vec<(usize, String)> = vec![
+            (
+                4,
+                "     # not a real comment, this is inside a docstring".to_string(),
+            ),
+            (5, "+    python tool.py --apply --select 1,3,6".to_string()),
+        ];
+        // Full head text: the docstring opens at line 1 and stays open.
+        let source: Vec<String> = vec![
+            "\"\"\"".to_string(),
+            "Module docstring.".to_string(),
+            "".to_string(),
+            "    # not a real comment, this is inside a docstring".to_string(),
+            "    python tool.py --apply --select 1,3,6".to_string(),
+        ];
+
+        // Without priming (today's behavior): the highlighter starts at line 4
+        // ignorant of the open string, so it tokenizes the lines as code.
+        let mut bare = HighlightCache::default();
+        let (_g, unprimed) = bare.window(&lines, "tool.py", &theme, 0, lines.len());
+        let unprimed_colors: std::collections::HashSet<_> = unprimed
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.style.fg))
+            .collect();
+
+        // With priming: every rendered line is inside the open string, so each
+        // collapses to a single uniform string color.
+        let mut primed = HighlightCache::default();
+        let (_g, content) =
+            primed.window_src(&lines, "tool.py", &theme, 0, lines.len(), Some(&source));
+        for (i, c) in content.iter().enumerate() {
+            let colors: std::collections::HashSet<_> = c.spans.iter().map(|s| s.style.fg).collect();
+            assert_eq!(
+                colors.len(),
+                1,
+                "primed docstring line {i} should be one color, got {colors:?}",
+            );
+        }
+
+        // The fix must actually change the output, else the test proves nothing.
+        let primed_colors: std::collections::HashSet<_> = content
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.style.fg))
+            .collect();
+        assert_ne!(
+            unprimed_colors, primed_colors,
+            "priming must change the highlighting vs the unprimed path",
+        );
+    }
+
+    /// A multi-line construct that opens AND closes entirely within a
+    /// between-hunk gap must not leak: priming has to feed the whole gap (up to
+    /// the next diff line) so the construct's close fires. This is the unified
+    /// failure mode — a function docstring sitting between two hunks left the
+    /// parser mid-string and painted the following code as one flat color.
+    #[test]
+    fn priming_feeds_entire_between_hunk_gap() {
+        let theme = Theme::dark();
+        // Diff shows head lines 1 and 6; lines 2-5 are an elided gap that opens
+        // a docstring (line 3) and closes it (line 5).
+        let lines: Vec<(usize, String)> = vec![
+            (1, " def f():".to_string()),
+            (6, "+    result = compute(a, b)".to_string()),
+        ];
+        let source: Vec<String> = vec![
+            "def f():".to_string(),
+            "    x = 1".to_string(),
+            "    s = \"\"\"".to_string(),
+            "    still inside the string".to_string(),
+            "    end\"\"\"".to_string(),
+            "    result = compute(a, b)".to_string(),
+        ];
+        let mut cache = HighlightCache::default();
+        let (_g, content) = cache.window_src(&lines, "f.py", &theme, 0, lines.len(), Some(&source));
+        // The post-gap code line must be tokenized as code (multiple colors),
+        // proving the docstring opened at line 3 was closed at line 5 during
+        // priming rather than leaking into line 6.
+        let colors: std::collections::HashSet<_> =
+            content[1].spans.iter().map(|s| s.style.fg).collect();
+        assert!(
+            colors.len() > 1,
+            "post-gap code should be multi-colored, got {colors:?}",
+        );
+    }
+
+    /// Out-of-order line numbers (unified `-` lines, alignment gap rows) must
+    /// not trigger a state-corrupting rewind or panic when a source is present.
+    #[test]
+    fn priming_tolerates_out_of_order_and_gap_rows() {
+        let theme = Theme::dark();
+        let lines: Vec<(usize, String)> = vec![
+            (10, "+let x = 1;".to_string()),
+            (0, " ".to_string()),             // alignment gap row
+            (3, "-let old = 2;".to_string()), // base-numbered line, < fed_upto
+            (11, "+let y = 3;".to_string()),
+        ];
+        let source: Vec<String> = (1..=11).map(|n| format!("line {n}")).collect();
+        let mut cache = HighlightCache::default();
+        // Must not panic; window length matches the request.
+        let (_g, content) = cache.window_src(&lines, "f.rs", &theme, 0, lines.len(), Some(&source));
+        assert_eq!(content.len(), lines.len());
     }
 
     fn sample_lines() -> Vec<(usize, String)> {

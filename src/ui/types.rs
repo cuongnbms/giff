@@ -1,4 +1,4 @@
-use crate::diff::{BranchStatus, CommitInfo, DiffSource, FileChanges, FileMetaMap};
+use crate::diff::{BranchStatus, CommitInfo, DiffSource, FileChanges, FileMetaMap, FullContent};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -33,6 +33,12 @@ pub struct Change {
 
 pub struct App {
     pub file_changes: FileChanges,
+    /// Full base/head text of each changed file (no diff markers), used to
+    /// prime syntax-highlight parse state so multi-line constructs opened
+    /// above a hunk are colored correctly. Refreshed on every diff (re)load;
+    /// empty when unavailable, in which case highlighting falls back to the
+    /// unprimed behavior.
+    pub full_content: FullContent,
     /// Per-file metadata (rename info, etc.) parsed from the diff headers.
     /// Parallel to `file_changes`: same keys.
     pub file_meta: FileMetaMap,

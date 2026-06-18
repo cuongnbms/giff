@@ -179,7 +179,30 @@ fn unified_change_block_ordering() {
             lc(2, "+x"),
             lc(3, "+y"),
             lc(4, "+z"),
-            lc(4, " end"),
+            // Context carries the HEAD line number (5), not the base number (4),
+            // so the rendered sequence is monotonic in head numbering for
+            // syntax-highlight priming.
+            lc(5, " end"),
+        ]
+    );
+}
+
+#[test]
+fn unified_context_uses_head_line_numbers() {
+    // After an insertion the sides' numbering diverges; the shared context
+    // line must be labeled with the HEAD number so head-source priming indexes
+    // correctly. Base line 2 == head line 4 here.
+    let base = vec![lc(1, "-removed"), lc(2, " ctx")];
+    let head = vec![lc(1, "+a"), lc(2, "+b"), lc(3, "+c"), lc(4, " ctx")];
+    let result = build_unified_lines(&base, &head);
+    assert_eq!(
+        result,
+        vec![
+            lc(1, "-removed"),
+            lc(1, "+a"),
+            lc(2, "+b"),
+            lc(3, "+c"),
+            lc(4, " ctx"),
         ]
     );
 }
