@@ -45,6 +45,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         if !app.wrap_mode {
             clamp_h_scroll(app, main_chunks[1].width);
         }
+        follow_cursor(app, main_chunks[1].height);
     }
 
     match app.app_mode {
@@ -412,6 +413,35 @@ fn render_file_tree(f: &mut Frame, app: &App, area: Rect, block: Block<'_>, inne
     );
 }
 
+/// Whether logical line `abs` is part of the selection or under the cursor.
+fn row_is_selected(abs: usize, cursor: Option<usize>, selection: Option<(usize, usize)>) -> bool {
+    if let Some((lo, hi)) = selection {
+        if abs >= lo && abs <= hi {
+            return true;
+        }
+    }
+    cursor == Some(abs)
+}
+
+/// Paint `bg` onto every span of the gutter+content rows that fall in the
+/// selection/cursor. `start` is the absolute logical index of the first row.
+fn highlight_selected_rows(
+    gutter: &mut [Line<'static>],
+    content: &mut [Line<'static>],
+    start: usize,
+    cursor: Option<usize>,
+    selection: Option<(usize, usize)>,
+    bg: ratatui::style::Color,
+) {
+    for (i, (g, c)) in gutter.iter_mut().zip(content.iter_mut()).enumerate() {
+        if row_is_selected(start + i, cursor, selection) {
+            for span in g.spans.iter_mut().chain(c.spans.iter_mut()) {
+                span.style = span.style.bg(bg);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_diff_pane(
     f: &mut Frame,
@@ -426,6 +456,8 @@ fn render_diff_pane(
     theme: &Theme,
     cache: &RefCell<HighlightCache>,
     source: Option<&[String]>,
+    cursor: Option<usize>,
+    selection: Option<(usize, usize)>,
 ) {
     let border_color = if is_focused {
         theme.border_focused
@@ -509,7 +541,7 @@ fn render_diff_pane(
             .window_src(lines, filename, theme, 0, end, source);
         // ratatui Paragraph::scroll() accepts (u16, u16); clamp for >65k rows.
         let scroll_u16 = scroll.min(u16::MAX as usize) as u16;
-        let merged: Vec<Line<'static>> = gutter_lines
+        let mut merged: Vec<Line<'static>> = gutter_lines
             .into_iter()
             .zip(content_lines)
             .map(|(g, c)| {
@@ -518,6 +550,16 @@ fn render_diff_pane(
                 Line::from(spans)
             })
             .collect();
+
+        // Wrap window starts at logical line 0, so the absolute index is the
+        // position in `merged`.
+        for (i, line) in merged.iter_mut().enumerate() {
+            if row_is_selected(i, cursor, selection) {
+                for span in line.spans.iter_mut() {
+                    span.style = span.style.bg(theme.bg_selection);
+                }
+            }
+        }
 
         if inner.width > 0 && inner.height > 0 {
             let paragraph = Paragraph::new(Text::from(merged))
@@ -529,10 +571,19 @@ fn render_diff_pane(
         // Non-wrap: copy only the visible window of highlighted rows so a
         // scroll keypress is O(visible) instead of O(file). The slice already
         // starts at `scroll`, so the paragraphs render at vertical offset 0.
-        let (gutter_lines, content_lines) =
+        let (mut gutter_lines, mut content_lines) =
             cache
                 .borrow_mut()
                 .window_src(lines, filename, theme, scroll, visible_height, source);
+
+        highlight_selected_rows(
+            &mut gutter_lines,
+            &mut content_lines,
+            scroll,
+            cursor,
+            selection,
+            theme.bg_selection,
+        );
 
         // Pin the line-number gutter + change marker (7 cols) so they stay
         // visible when the user scrolls the code horizontally.
@@ -910,6 +961,12 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         &app.theme,
         &app.highlight_cache,
         base_src,
+        if is_focused {
+            Some(app.diff_cursor)
+        } else {
+            None
+        },
+        app.selection_range(),
     );
     render_diff_pane(
         f,
@@ -924,6 +981,12 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         &app.theme,
         &app.highlight_cache,
         head_src,
+        if is_focused {
+            Some(app.diff_cursor)
+        } else {
+            None
+        },
+        app.selection_range(),
     );
 }
 
@@ -1014,6 +1077,12 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         &app.theme,
         &app.highlight_cache,
         head_src,
+        if is_focused {
+            Some(app.diff_cursor)
+        } else {
+            None
+        },
+        app.selection_range(),
     );
 }
 
@@ -1572,6 +1641,34 @@ fn max_line_width(app: &App, file: &str) -> usize {
         })
         .max()
         .unwrap_or(0)
+}
+
+/// Adjust the current file's scroll so the diff cursor stays visible. Precise
+/// in non-wrap mode (scroll indexes logical lines); skipped in wrap mode, where
+/// scroll counts visual rows and the mapping is only approximate (best effort).
+fn follow_cursor(app: &mut App, content_height: u16) {
+    if !matches!(app.app_mode, AppMode::Diff) || app.wrap_mode {
+        return;
+    }
+    let Some(file) = app.file_names.get(app.current_file_idx).cloned() else {
+        return;
+    };
+    let visible = (content_height.saturating_sub(2)) as usize; // borders
+    if visible == 0 {
+        return;
+    }
+    let scroll = *app.scroll_positions.get(&file).unwrap_or(&0);
+    let cur = app.diff_cursor;
+    let new = if cur < scroll {
+        cur
+    } else if cur >= scroll + visible {
+        cur + 1 - visible
+    } else {
+        scroll
+    };
+    if new != scroll {
+        app.scroll_positions.insert(file, new);
+    }
 }
 
 fn clamp_h_scroll(app: &mut App, content_area_width: u16) {
