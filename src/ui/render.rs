@@ -553,6 +553,10 @@ fn render_diff_pane(
 
         // Wrap window starts at logical line 0, so the absolute index is the
         // position in `merged`.
+        // NB: in wrap mode (esp. side-by-side, where pad_aligned_for_wrap inserts
+        // padding rows) `i` is a positional/visual index, not the logical line
+        // index that `cursor`/`selection` carry, so this highlight is approximate
+        // and can diverge from what `y` copies. Best-effort per the wrap design.
         for (i, line) in merged.iter_mut().enumerate() {
             if row_is_selected(i, cursor, selection) {
                 for span in line.spans.iter_mut() {

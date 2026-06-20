@@ -3,8 +3,6 @@
 //! copy) where a native clipboard crate would write the remote host's
 //! clipboard. base64 is hand-rolled to avoid a dependency.
 
-#![allow(dead_code)] // TODO(copy): drop once event_loop calls copy_to_clipboard
-
 use std::env;
 use std::io::Write;
 
