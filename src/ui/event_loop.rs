@@ -1520,6 +1520,9 @@ mod tests {
             pending_commit_message: None,
             show_commit_modal: false,
             highlight_cache: std::cell::RefCell::new(crate::ui::syntax::HighlightCache::default()),
+            diff_cursor: 0,
+            selection_anchor: None,
+            mouse_selecting: false,
         }
     }
 

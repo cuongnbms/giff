@@ -104,6 +104,38 @@ pub struct App {
     /// re-highlighting the whole file every frame. `RefCell` because the
     /// render path holds `&App`.
     pub highlight_cache: RefCell<HighlightCache>,
+    /// Logical line index of the diff-pane cursor within the current view's
+    /// line sequence (unified lines, or aligned side-by-side rows). Reset on
+    /// file switch, view-mode toggle, and diff reload.
+    #[allow(dead_code)]
+    pub diff_cursor: usize,
+    /// When `Some`, a visual-line selection is active anchored at this logical
+    /// line index; the selection spans `anchor..=diff_cursor`.
+    #[allow(dead_code)]
+    pub selection_anchor: Option<usize>,
+    /// True between mouse-down and mouse-up while drag-selecting in the diff
+    /// pane, so `Drag` events extend the selection.
+    #[allow(dead_code)]
+    pub mouse_selecting: bool,
+}
+
+impl App {
+    /// Clear the diff-pane cursor and any active selection. Called whenever the
+    /// rendered line sequence changes meaning (file switch, view toggle, reload).
+    #[allow(dead_code)]
+    pub fn reset_diff_selection(&mut self) {
+        self.diff_cursor = 0;
+        self.selection_anchor = None;
+        self.mouse_selecting = false;
+    }
+
+    /// The inclusive selection range `(lo, hi)` in logical line indices, or
+    /// `None` when no selection is active.
+    #[allow(dead_code)]
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.selection_anchor
+            .map(|a| (a.min(self.diff_cursor), a.max(self.diff_cursor)))
+    }
 }
 
 pub enum Pane {
@@ -114,4 +146,78 @@ pub enum Pane {
 pub enum ViewMode {
     SideBySide,
     Unified,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bare_app() -> App {
+        App {
+            file_changes: Default::default(),
+            full_content: Default::default(),
+            file_meta: Default::default(),
+            left_label: String::new(),
+            right_label: String::new(),
+            current_file_idx: 0,
+            file_names: Vec::new(),
+            scroll_positions: Default::default(),
+            h_scroll_positions: Default::default(),
+            focused_pane: Pane::DiffContent,
+            view_mode: ViewMode::Unified,
+            app_mode: AppMode::Diff,
+            rebase_changes: Default::default(),
+            current_change_idx: 0,
+            rebase_notification: None,
+            show_rebase_modal: false,
+            status_message: None,
+            show_help_modal: false,
+            theme: Theme::dark(),
+            theme_cycle: Vec::new(),
+            theme_cycle_idx: 0,
+            diff_source: crate::diff::DiffSource::Uncommitted,
+            commits: Vec::new(),
+            current_commit_idx: 0,
+            log_return_source: None,
+            remotes: Vec::new(),
+            current_remote_idx: 0,
+            branch_status: None,
+            file_list_width_pct: 30,
+            resizing_divider: false,
+            full_file: false,
+            wrap_mode: false,
+            hide_pure_renames: false,
+            file_tree_view: false,
+            pending_commit_message: None,
+            show_commit_modal: false,
+            highlight_cache: std::cell::RefCell::new(crate::ui::syntax::HighlightCache::default()),
+            diff_cursor: 0,
+            selection_anchor: None,
+            mouse_selecting: false,
+        }
+    }
+
+    #[test]
+    fn selection_range_orders_anchor_and_cursor() {
+        let mut app = bare_app();
+        app.diff_cursor = 5;
+        app.selection_anchor = Some(2);
+        assert_eq!(app.selection_range(), Some((2, 5)));
+        app.diff_cursor = 1;
+        assert_eq!(app.selection_range(), Some((1, 2)));
+        app.selection_anchor = None;
+        assert_eq!(app.selection_range(), None);
+    }
+
+    #[test]
+    fn reset_clears_cursor_and_selection() {
+        let mut app = bare_app();
+        app.diff_cursor = 9;
+        app.selection_anchor = Some(3);
+        app.mouse_selecting = true;
+        app.reset_diff_selection();
+        assert_eq!(app.diff_cursor, 0);
+        assert_eq!(app.selection_anchor, None);
+        assert!(!app.mouse_selecting);
+    }
 }

@@ -138,6 +138,9 @@ pub fn run_app(
         pending_commit_message: None,
         show_commit_modal: false,
         highlight_cache: RefCell::new(HighlightCache::default()),
+        diff_cursor: 0,
+        selection_anchor: None,
+        mouse_selecting: false,
     };
 
     // Land the selection on the top-of-tree file so the file pane opens
