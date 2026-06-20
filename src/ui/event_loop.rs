@@ -59,6 +59,7 @@ fn move_file_selection(app: &mut App, delta: isize) {
         .unwrap_or(0) as isize;
     let new_pos = (pos + delta).clamp(0, order.len() as isize - 1) as usize;
     app.current_file_idx = order[new_pos];
+    app.reset_diff_selection();
 }
 
 /// Place the startup selection on the first file in on-screen order.
@@ -365,6 +366,7 @@ fn reload_diff(app: &mut App) {
     app.right_label = payload.right_label;
     app.branch_status = diff::branch_status().ok();
     refresh_full_content(app);
+    app.reset_diff_selection();
     app.status_message = Some("Diff reloaded".to_string());
 }
 
@@ -392,6 +394,7 @@ fn load_diff_from_source(app: &mut App, source: DiffSource) -> Result<(), String
     app.current_file_idx = 0;
     app.diff_source = source;
     refresh_full_content(app);
+    app.reset_diff_selection();
     Ok(())
 }
 
@@ -855,6 +858,13 @@ where
                     }
 
                     match key.code {
+                        KeyCode::Esc
+                            if matches!(app.app_mode, AppMode::Diff)
+                                && app.selection_anchor.is_some() =>
+                        {
+                            app.selection_anchor = None;
+                            app.mouse_selecting = false;
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             match app.app_mode {
                                 AppMode::Diff => {
@@ -922,10 +932,7 @@ where
                                     move_file_selection(&mut app, 1);
                                 }
                                 Pane::DiffContent => {
-                                    if let Some(file) = app.file_names.get(app.current_file_idx) {
-                                        let scroll = *app.scroll_positions.get(file).unwrap_or(&0);
-                                        app.scroll_positions.insert(file.clone(), scroll + 1);
-                                    }
+                                    move_diff_cursor(&mut app, 1);
                                 }
                             },
                             AppMode::Rebase => {
@@ -952,12 +959,7 @@ where
                                     move_file_selection(&mut app, -1);
                                 }
                                 Pane::DiffContent => {
-                                    if let Some(file) = app.file_names.get(app.current_file_idx) {
-                                        let scroll = *app.scroll_positions.get(file).unwrap_or(&0);
-                                        if scroll > 0 {
-                                            app.scroll_positions.insert(file.clone(), scroll - 1);
-                                        }
-                                    }
+                                    move_diff_cursor(&mut app, -1);
                                 }
                             },
                             AppMode::Rebase => {
@@ -979,13 +981,8 @@ where
                                     move_file_selection(&mut app, page as isize);
                                 }
                                 Pane::DiffContent => {
-                                    if let Some(file) = app.file_names.get(app.current_file_idx) {
-                                        let scroll = *app.scroll_positions.get(file).unwrap_or(&0);
-                                        let page =
-                                            terminal.size()?.height.saturating_sub(6) as usize;
-                                        app.scroll_positions
-                                            .insert(file.clone(), scroll.saturating_add(page));
-                                    }
+                                    let page = terminal.size()?.height.saturating_sub(6) as isize;
+                                    move_diff_cursor(&mut app, page);
                                 }
                             },
                             AppMode::Rebase => {
@@ -1017,13 +1014,8 @@ where
                                     move_file_selection(&mut app, -(page as isize));
                                 }
                                 Pane::DiffContent => {
-                                    if let Some(file) = app.file_names.get(app.current_file_idx) {
-                                        let scroll = *app.scroll_positions.get(file).unwrap_or(&0);
-                                        let page =
-                                            terminal.size()?.height.saturating_sub(6) as usize;
-                                        app.scroll_positions
-                                            .insert(file.clone(), scroll.saturating_sub(page));
-                                    }
+                                    let page = terminal.size()?.height.saturating_sub(6) as isize;
+                                    move_diff_cursor(&mut app, -page);
                                 }
                             },
                             AppMode::Rebase => {
@@ -1125,7 +1117,8 @@ where
                                 app.view_mode = match app.view_mode {
                                     ViewMode::SideBySide => ViewMode::Unified,
                                     ViewMode::Unified => ViewMode::SideBySide,
-                                }
+                                };
+                                app.reset_diff_selection();
                             }
                         }
                         KeyCode::Char('w') => {
@@ -1233,6 +1226,26 @@ where
                         KeyCode::Char('p') => {
                             if let AppMode::Rebase = app.app_mode {
                                 navigate_rebase_file(&mut app, false);
+                            }
+                        }
+                        KeyCode::Char('v')
+                            if matches!(app.app_mode, AppMode::Diff)
+                                && matches!(app.focused_pane, Pane::DiffContent) =>
+                        {
+                            app.selection_anchor = match app.selection_anchor {
+                                Some(_) => None,
+                                None => Some(app.diff_cursor),
+                            };
+                        }
+                        KeyCode::Char('y')
+                            if matches!(app.app_mode, AppMode::Diff)
+                                && matches!(app.focused_pane, Pane::DiffContent) =>
+                        {
+                            if let Some((text, n)) = selected_diff_text(&app) {
+                                super::clipboard::copy_to_clipboard(&text);
+                                app.selection_anchor = None;
+                                app.mouse_selecting = false;
+                                app.status_message = Some(format!("Copied {} line(s)", n));
                             }
                         }
                         KeyCode::Char('?') => {
@@ -1416,9 +1429,20 @@ where
     }
 }
 
+/// Move the diff-pane cursor by `delta` logical lines, clamped to the current
+/// file's line count. The renderer scrolls to keep it visible.
+fn move_diff_cursor(app: &mut App, delta: isize) {
+    let count = diff_line_count(app);
+    if count == 0 {
+        app.diff_cursor = 0;
+        return;
+    }
+    let max = count - 1;
+    let next = (app.diff_cursor as isize + delta).clamp(0, max as isize);
+    app.diff_cursor = next as usize;
+}
+
 /// Strip the leading unified-diff marker (`+`/`-`/space) from a content line.
-// TODO(copy): consumed by event_loop key handling in the next task
-#[allow(dead_code)]
 fn strip_marker(s: &str) -> &str {
     match s.as_bytes().first() {
         Some(b'+') | Some(b'-') | Some(b' ') => &s[1..],
@@ -1427,8 +1451,6 @@ fn strip_marker(s: &str) -> &str {
 }
 
 /// Number of logical lines in the current file's diff under the active view.
-// TODO(copy): consumed by event_loop key handling in the next task
-#[allow(dead_code)]
 fn diff_line_count(app: &App) -> usize {
     let Some(file) = app.file_names.get(app.current_file_idx) else {
         return 0;
@@ -1444,8 +1466,6 @@ fn diff_line_count(app: &App) -> usize {
 
 /// Clean text for the current selection (or the cursor line if none), plus the
 /// number of lines. Returns `None` when there is nothing to copy.
-// TODO(copy): consumed by event_loop key handling in the next task
-#[allow(dead_code)]
 fn selected_diff_text(app: &App) -> Option<(String, usize)> {
     let file = app.file_names.get(app.current_file_idx)?;
     let (base, head) = app.file_changes.get(file)?;
@@ -2122,6 +2142,33 @@ mod tests {
         let (text, n) = selected_diff_text(&app).unwrap();
         assert_eq!(text, "b\n");
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn move_cursor_clamps_to_line_count() {
+        let mut app = make_app(vec!["f.rs"], vec!["f.rs"]);
+        app.file_changes.insert(
+            "f.rs".to_string(),
+            (
+                vec![
+                    (1, " a".to_string()),
+                    (2, " b".to_string()),
+                    (3, " c".to_string()),
+                ],
+                vec![
+                    (1, " a".to_string()),
+                    (2, " b".to_string()),
+                    (3, " c".to_string()),
+                ],
+            ),
+        );
+        app.view_mode = ViewMode::Unified;
+        app.current_file_idx = 0;
+        app.diff_cursor = 0;
+        move_diff_cursor(&mut app, -1);
+        assert_eq!(app.diff_cursor, 0); // clamped at top
+        move_diff_cursor(&mut app, 100);
+        assert_eq!(app.diff_cursor, 2); // clamped at bottom (3 lines -> idx 2)
     }
 
     #[test]

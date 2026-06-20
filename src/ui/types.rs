@@ -107,22 +107,18 @@ pub struct App {
     /// Logical line index of the diff-pane cursor within the current view's
     /// line sequence (unified lines, or aligned side-by-side rows). Reset on
     /// file switch, view-mode toggle, and diff reload.
-    #[allow(dead_code)]
     pub diff_cursor: usize,
     /// When `Some`, a visual-line selection is active anchored at this logical
     /// line index; the selection spans `anchor..=diff_cursor`.
-    #[allow(dead_code)]
     pub selection_anchor: Option<usize>,
     /// True between mouse-down and mouse-up while drag-selecting in the diff
     /// pane, so `Drag` events extend the selection.
-    #[allow(dead_code)]
     pub mouse_selecting: bool,
 }
 
 impl App {
     /// Clear the diff-pane cursor and any active selection. Called whenever the
     /// rendered line sequence changes meaning (file switch, view toggle, reload).
-    #[allow(dead_code)]
     pub fn reset_diff_selection(&mut self) {
         self.diff_cursor = 0;
         self.selection_anchor = None;
@@ -131,7 +127,6 @@ impl App {
 
     /// The inclusive selection range `(lo, hi)` in logical line indices, or
     /// `None` when no selection is active.
-    #[allow(dead_code)]
     pub fn selection_range(&self) -> Option<(usize, usize)> {
         self.selection_anchor
             .map(|a| (a.min(self.diff_cursor), a.max(self.diff_cursor)))
