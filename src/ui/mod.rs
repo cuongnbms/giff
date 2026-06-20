@@ -1,3 +1,4 @@
+mod clipboard;
 mod event_loop;
 mod rebase;
 pub(crate) mod render;
