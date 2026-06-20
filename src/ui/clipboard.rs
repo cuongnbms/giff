@@ -3,14 +3,14 @@
 //! copy) where a native clipboard crate would write the remote host's
 //! clipboard. base64 is hand-rolled to avoid a dependency.
 
+#![allow(dead_code)] // TODO(copy): drop once event_loop calls copy_to_clipboard
+
 use std::env;
 use std::io::Write;
 
-#[allow(dead_code)]
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Standard base64 with `=` padding.
-#[allow(dead_code)]
 pub fn base64_encode(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -37,7 +37,6 @@ pub fn base64_encode(input: &[u8]) -> String {
 /// Build the OSC 52 sequence that sets the system clipboard to `text`.
 /// When running inside tmux, wrap it in tmux's passthrough so the escape
 /// reaches the outer terminal.
-#[allow(dead_code)]
 pub fn osc52(text: &str) -> String {
     let payload = base64_encode(text.as_bytes());
     let seq = format!("\x1b]52;c;{}\x07", payload);
@@ -51,7 +50,6 @@ pub fn osc52(text: &str) -> String {
 
 /// Write the clipboard escape to stdout. Best effort: errors are ignored
 /// because a failed clipboard write must never crash the UI.
-#[allow(dead_code)]
 pub fn copy_to_clipboard(text: &str) {
     let seq = osc52(text);
     let mut stdout = std::io::stdout();
