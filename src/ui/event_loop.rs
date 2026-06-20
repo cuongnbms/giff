@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::rebase::prepare_rebase_changes;
 use super::render::ui;
+use super::render::{align_lines, build_unified_lines};
 use super::types::*;
 
 /// Replicates ratatui's `List` offset rule for a fresh (default) `ListState`:
@@ -1415,6 +1416,74 @@ where
     }
 }
 
+/// Strip the leading unified-diff marker (`+`/`-`/space) from a content line.
+// TODO(copy): consumed by event_loop key handling in the next task
+#[allow(dead_code)]
+fn strip_marker(s: &str) -> &str {
+    match s.as_bytes().first() {
+        Some(b'+') | Some(b'-') | Some(b' ') => &s[1..],
+        _ => s,
+    }
+}
+
+/// Number of logical lines in the current file's diff under the active view.
+// TODO(copy): consumed by event_loop key handling in the next task
+#[allow(dead_code)]
+fn diff_line_count(app: &App) -> usize {
+    let Some(file) = app.file_names.get(app.current_file_idx) else {
+        return 0;
+    };
+    let Some((base, head)) = app.file_changes.get(file) else {
+        return 0;
+    };
+    match app.view_mode {
+        ViewMode::Unified => super::render::unified_line_count(base, head),
+        ViewMode::SideBySide => super::render::aligned_line_count(base, head),
+    }
+}
+
+/// Clean text for the current selection (or the cursor line if none), plus the
+/// number of lines. Returns `None` when there is nothing to copy.
+// TODO(copy): consumed by event_loop key handling in the next task
+#[allow(dead_code)]
+fn selected_diff_text(app: &App) -> Option<(String, usize)> {
+    let file = app.file_names.get(app.current_file_idx)?;
+    let (base, head) = app.file_changes.get(file)?;
+    let (lo, hi) = app
+        .selection_range()
+        .unwrap_or((app.diff_cursor, app.diff_cursor));
+
+    let mut out: Vec<String> = Vec::new();
+    match app.view_mode {
+        ViewMode::Unified => {
+            let lines = build_unified_lines(base, head);
+            for line in lines.iter().take(hi + 1).skip(lo) {
+                out.push(strip_marker(&line.1).to_string());
+            }
+        }
+        ViewMode::SideBySide => {
+            let (ab, ah) = align_lines(base, head);
+            for i in lo..=hi.min(ah.len().saturating_sub(1)) {
+                let h = ah.get(i).map(|c| c.1.as_str()).unwrap_or("");
+                let b = ab.get(i).map(|c| c.1.as_str()).unwrap_or("");
+                let chosen = if !h.is_empty() { h } else { b };
+                if chosen.is_empty() {
+                    continue; // blank padding row on both sides
+                }
+                out.push(strip_marker(chosen).to_string());
+            }
+        }
+    }
+
+    if out.is_empty() {
+        return None;
+    }
+    let n = out.len();
+    let mut text = out.join("\n");
+    text.push('\n');
+    Some((text, n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::theme::Theme;
@@ -2014,5 +2083,66 @@ mod tests {
     fn file_list_offset_clamps_to_max() {
         // Near the end, offset clamps so the last `height` items show.
         assert_eq!(file_list_offset(99, 100, 10), 90);
+    }
+
+    #[test]
+    fn selected_text_unified_strips_markers() {
+        let mut app = make_app(vec!["f.rs"], vec!["f.rs"]);
+        app.file_changes.insert(
+            "f.rs".to_string(),
+            (
+                vec![(1, " ctx".to_string()), (2, "-old".to_string())],
+                vec![(1, " ctx".to_string()), (2, "+new".to_string())],
+            ),
+        );
+        app.view_mode = ViewMode::Unified;
+        app.current_file_idx = 0;
+        // Unified order: " ctx", "-old", "+new" -> indices 0,1,2.
+        app.diff_cursor = 2;
+        app.selection_anchor = Some(0);
+        let (text, n) = selected_diff_text(&app).unwrap();
+        assert_eq!(text, "ctx\nold\nnew\n");
+        assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn selected_text_single_line_no_selection() {
+        let mut app = make_app(vec!["f.rs"], vec!["f.rs"]);
+        app.file_changes.insert(
+            "f.rs".to_string(),
+            (
+                vec![(1, " a".to_string()), (2, " b".to_string())],
+                vec![(1, " a".to_string()), (2, " b".to_string())],
+            ),
+        );
+        app.view_mode = ViewMode::Unified;
+        app.current_file_idx = 0;
+        app.diff_cursor = 1;
+        app.selection_anchor = None;
+        let (text, n) = selected_diff_text(&app).unwrap();
+        assert_eq!(text, "b\n");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn selected_text_side_by_side_prefers_head() {
+        let mut app = make_app(vec!["f.rs"], vec!["f.rs"]);
+        // A replacement: base "-old" aligns with head "+new"; plus a pure
+        // deletion "-gone" aligned against a blank head padding row.
+        app.file_changes.insert(
+            "f.rs".to_string(),
+            (
+                vec![(1, "-old".to_string()), (2, "-gone".to_string())],
+                vec![(1, "+new".to_string())],
+            ),
+        );
+        app.view_mode = ViewMode::SideBySide;
+        app.current_file_idx = 0;
+        // align_lines pairs row0 = (-old | +new), row1 = (-gone | <blank>).
+        app.diff_cursor = 1;
+        app.selection_anchor = Some(0);
+        let (text, _n) = selected_diff_text(&app).unwrap();
+        // row0 -> head "new"; row1 -> head blank, fall back to base "gone".
+        assert_eq!(text, "new\ngone\n");
     }
 }
