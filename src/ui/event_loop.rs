@@ -1338,6 +1338,42 @@ where
                                 }
                                 continue;
                             }
+                            MouseEventKind::Down(MouseButton::Left)
+                                if matches!(app.app_mode, AppMode::Diff)
+                                    && !on_divider
+                                    && !in_file_list =>
+                            {
+                                if let Some(line) = row_to_diff_line(
+                                    &app,
+                                    mouse.row,
+                                    size.height,
+                                    file_list_width,
+                                    mouse.column,
+                                ) {
+                                    app.focused_pane = Pane::DiffContent;
+                                    app.diff_cursor = line;
+                                    app.selection_anchor = Some(line);
+                                    app.mouse_selecting = true;
+                                }
+                            }
+                            MouseEventKind::Drag(MouseButton::Left) if app.mouse_selecting => {
+                                if let Some(line) = row_to_diff_line(
+                                    &app,
+                                    mouse.row,
+                                    size.height,
+                                    file_list_width,
+                                    mouse.column,
+                                ) {
+                                    app.diff_cursor = line;
+                                }
+                            }
+                            MouseEventKind::Up(MouseButton::Left) if app.mouse_selecting => {
+                                app.mouse_selecting = false;
+                                // A plain click (no drag) leaves no highlight.
+                                if app.selection_anchor == Some(app.diff_cursor) {
+                                    app.selection_anchor = None;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -1462,6 +1498,36 @@ fn diff_line_count(app: &App) -> usize {
         ViewMode::Unified => super::render::unified_line_count(base, head),
         ViewMode::SideBySide => super::render::aligned_line_count(base, head),
     }
+}
+
+/// Map a mouse click at terminal (`column`, `row`) to a logical diff line.
+/// Returns `None` when the click is in the file-list column, on the divider, or
+/// on the header/help rows. Non-wrap mapping is exact; in wrap mode it is a
+/// best-effort approximation (visual rows ≠ logical lines).
+fn row_to_diff_line(
+    app: &App,
+    row: u16,
+    term_height: u16,
+    file_list_width: u16,
+    column: u16,
+) -> Option<usize> {
+    // Header occupies row 0, help occupies the last row; the diff block's top
+    // border is row 1, so its first content row is row 2.
+    const DIFF_CONTENT_TOP: u16 = 2;
+    if row < DIFF_CONTENT_TOP || row >= term_height.saturating_sub(1) {
+        return None;
+    }
+    if column <= file_list_width {
+        return None; // file list or divider
+    }
+    let count = diff_line_count(app);
+    if count == 0 {
+        return None;
+    }
+    let file = app.file_names.get(app.current_file_idx)?;
+    let scroll = *app.scroll_positions.get(file).unwrap_or(&0);
+    let offset = (row - DIFF_CONTENT_TOP) as usize;
+    Some((scroll + offset).min(count - 1))
 }
 
 /// Clean text for the current selection (or the cursor line if none), plus the
@@ -2191,5 +2257,30 @@ mod tests {
         let (text, _n) = selected_diff_text(&app).unwrap();
         // row0 -> head "new"; row1 -> head blank, fall back to base "gone".
         assert_eq!(text, "new\ngone\n");
+    }
+
+    #[test]
+    fn row_maps_to_logical_line_with_scroll() {
+        let mut app = make_app(vec!["f.rs"], vec!["f.rs"]);
+        app.file_changes.insert(
+            "f.rs".to_string(),
+            (
+                (0..20).map(|i| (i, format!(" l{i}"))).collect(),
+                (0..20).map(|i| (i, format!(" l{i}"))).collect(),
+            ),
+        );
+        app.view_mode = ViewMode::Unified;
+        app.current_file_idx = 0;
+        app.scroll_positions.insert("f.rs".to_string(), 5);
+        // Diff inner content starts at y=2 (header row 0, top border row 1).
+        // Click at row 4, column past the file list (width 30), height 40.
+        let line = row_to_diff_line(&app, 4, 40, 30, 35).unwrap();
+        assert_eq!(line, 5 + (4 - 2)); // scroll + (row - 2) = 7
+
+        // A click in the file-list column returns None.
+        assert_eq!(row_to_diff_line(&app, 4, 40, 30, 10), None);
+        // A click on the header/help rows returns None.
+        assert_eq!(row_to_diff_line(&app, 0, 40, 30, 35), None);
+        assert_eq!(row_to_diff_line(&app, 39, 40, 30, 35), None);
     }
 }
