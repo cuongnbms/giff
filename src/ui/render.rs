@@ -429,12 +429,11 @@ fn highlight_selected_rows(
     gutter: &mut [Line<'static>],
     content: &mut [Line<'static>],
     start: usize,
-    cursor: Option<usize>,
-    selection: Option<(usize, usize)>,
+    selected: &[bool],
     bg: ratatui::style::Color,
 ) {
     for (i, (g, c)) in gutter.iter_mut().zip(content.iter_mut()).enumerate() {
-        if row_is_selected(start + i, cursor, selection) {
+        if selected.get(start + i).copied().unwrap_or(false) {
             for span in g.spans.iter_mut().chain(c.spans.iter_mut()) {
                 span.style = span.style.bg(bg);
             }
@@ -456,8 +455,11 @@ fn render_diff_pane(
     theme: &Theme,
     cache: &RefCell<HighlightCache>,
     source: Option<&[String]>,
-    cursor: Option<usize>,
-    selection: Option<(usize, usize)>,
+    // Parallel to `lines`: `selected[i]` is true when line `i` is under the
+    // cursor or inside the selection. Callers build it in the same coordinate
+    // space as `lines` (incl. side-by-side wrap padding), so the highlight
+    // always matches what `y` copies.
+    selected: &[bool],
 ) {
     let border_color = if is_focused {
         theme.border_focused
@@ -551,14 +553,14 @@ fn render_diff_pane(
             })
             .collect();
 
-        // Wrap window starts at logical line 0, so the absolute index is the
-        // position in `merged`.
-        // NB: in wrap mode (esp. side-by-side, where pad_aligned_for_wrap inserts
-        // padding rows) `i` is a positional/visual index, not the logical line
-        // index that `cursor`/`selection` carry, so this highlight is approximate
-        // and can diverge from what `y` copies. Best-effort per the wrap design.
+        // `merged` and `selected` are both parallel to `lines` (the window
+        // starts at line 0), so index `selected` by `i`. ratatui replicates a
+        // Line's background across every visual row it wraps to, so painting the
+        // logical Line highlights the whole wrapped line — and for side-by-side
+        // the caller replicated the flag onto padding rows, so the band stays
+        // solid and aligned across both panes.
         for (i, line) in merged.iter_mut().enumerate() {
-            if row_is_selected(i, cursor, selection) {
+            if selected.get(i).copied().unwrap_or(false) {
                 for span in line.spans.iter_mut() {
                     span.style = span.style.bg(theme.bg_selection);
                 }
@@ -584,8 +586,7 @@ fn render_diff_pane(
             &mut gutter_lines,
             &mut content_lines,
             scroll,
-            cursor,
-            selection,
+            selected,
             theme.bg_selection,
         );
 
@@ -774,28 +775,42 @@ pub(super) fn unified_wrapped_row_count(
 /// In wrap mode, pad each (base, head) pair from `align_lines` so both sides
 /// have equal visual row counts. Inserts blank `(0, "")` entries on the
 /// shorter side after each logical line.
+/// Pad each side's aligned rows with blank rows so both panes occupy the same
+/// number of visual rows once wrapped. `selected` is parallel to the un-padded
+/// rows; the returned per-side selection flags replicate each row's flag onto
+/// the blank padding it spawns, so a highlighted row stays a solid band across
+/// both panes. The two sides pad independently, so their selection vectors can
+/// differ — that is why each pane gets its own.
 pub(super) fn pad_aligned_for_wrap(
     aligned_base: Vec<LineChange>,
     aligned_head: Vec<LineChange>,
+    selected: &[bool],
     pane_inner_width: usize,
-) -> (Vec<LineChange>, Vec<LineChange>) {
+) -> (Vec<LineChange>, Vec<LineChange>, Vec<bool>, Vec<bool>) {
     debug_assert_eq!(aligned_base.len(), aligned_head.len());
     let mut out_base = Vec::with_capacity(aligned_base.len());
     let mut out_head = Vec::with_capacity(aligned_head.len());
-    for (b, h) in aligned_base.into_iter().zip(aligned_head) {
+    let mut out_base_sel = Vec::with_capacity(aligned_base.len());
+    let mut out_head_sel = Vec::with_capacity(aligned_head.len());
+    for (i, (b, h)) in aligned_base.into_iter().zip(aligned_head).enumerate() {
+        let sel = selected.get(i).copied().unwrap_or(false);
         let b_rows = merged_line_rows(&b, pane_inner_width);
         let h_rows = merged_line_rows(&h, pane_inner_width);
         let max_rows = b_rows.max(h_rows);
         out_base.push(b);
+        out_base_sel.push(sel);
         out_head.push(h);
+        out_head_sel.push(sel);
         for _ in b_rows..max_rows {
             out_base.push((0, String::new()));
+            out_base_sel.push(sel);
         }
         for _ in h_rows..max_rows {
             out_head.push((0, String::new()));
+            out_head_sel.push(sel);
         }
     }
-    (out_base, out_head)
+    (out_base, out_head, out_base_sel, out_head_sel)
 }
 
 /// Produce aligned line vectors for side-by-side display.
@@ -943,13 +958,25 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
     };
 
     let (aligned_base, aligned_head) = align_lines(base_lines, head_lines);
-    // In wrap mode, pad each pair so both panes' visual rows stay aligned.
-    // Use the smaller pane width for wrap math so both sides agree on counts.
-    let (aligned_base, aligned_head) = if app.wrap_mode {
-        let pane_inner = base_area.width.min(head_area.width).saturating_sub(2) as usize;
-        pad_aligned_for_wrap(aligned_base, aligned_head, pane_inner)
+    // Selection flags in the un-padded aligned space (what `diff_cursor` and the
+    // copy path use). Cursor is only shown when the diff pane is focused.
+    let cursor = if is_focused {
+        Some(app.diff_cursor)
     } else {
-        (aligned_base, aligned_head)
+        None
+    };
+    let sel_range = app.selection_range();
+    let sel: Vec<bool> = (0..aligned_base.len())
+        .map(|i| row_is_selected(i, cursor, sel_range))
+        .collect();
+    // In wrap mode, pad each pair so both panes' visual rows stay aligned, and
+    // pad the selection flags alongside so the highlight tracks the same rows.
+    // Use the smaller pane width for wrap math so both sides agree on counts.
+    let (aligned_base, aligned_head, base_sel, head_sel) = if app.wrap_mode {
+        let pane_inner = base_area.width.min(head_area.width).saturating_sub(2) as usize;
+        pad_aligned_for_wrap(aligned_base, aligned_head, &sel, pane_inner)
+    } else {
+        (aligned_base, aligned_head, sel.clone(), sel)
     };
 
     render_diff_pane(
@@ -965,12 +992,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         &app.theme,
         &app.highlight_cache,
         base_src,
-        if is_focused {
-            Some(app.diff_cursor)
-        } else {
-            None
-        },
-        app.selection_range(),
+        &base_sel,
     );
     render_diff_pane(
         f,
@@ -985,12 +1007,7 @@ fn render_side_by_side(f: &mut Frame, app: &App, base_area: Rect, head_area: Rec
         &app.theme,
         &app.highlight_cache,
         head_src,
-        if is_focused {
-            Some(app.diff_cursor)
-        } else {
-            None
-        },
-        app.selection_range(),
+        &head_sel,
     );
 }
 
@@ -1067,6 +1084,18 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         .get(current_file)
         .map(|(_, h)| h.as_slice());
 
+    // Selection flags parallel to `unified_lines` (the cursor/copy coordinate
+    // space). Cursor is only shown when the diff pane is focused.
+    let cursor = if is_focused {
+        Some(app.diff_cursor)
+    } else {
+        None
+    };
+    let sel_range = app.selection_range();
+    let selected: Vec<bool> = (0..unified_lines.len())
+        .map(|i| row_is_selected(i, cursor, sel_range))
+        .collect();
+
     let title = format!("{} vs {}", app.left_label, app.right_label);
     render_diff_pane(
         f,
@@ -1081,12 +1110,7 @@ fn render_unified_diff(f: &mut Frame, app: &App, area: Rect) {
         &app.theme,
         &app.highlight_cache,
         head_src,
-        if is_focused {
-            Some(app.diff_cursor)
-        } else {
-            None
-        },
-        app.selection_range(),
+        &selected,
     );
 }
 
@@ -2070,7 +2094,7 @@ mod tests {
         // Padding should add 1 blank entry on the head side.
         let base = vec![(1, " aaaaa".to_string())];
         let head = vec![(1, " bb".to_string())];
-        let (b, h) = pad_aligned_for_wrap(base, head, 10);
+        let (b, h, _bs, _hs) = pad_aligned_for_wrap(base, head, &[], 10);
         assert_eq!(b.len(), 1);
         assert_eq!(h.len(), 2);
         assert_eq!(h[1], (0, String::new()));
@@ -2080,9 +2104,26 @@ mod tests {
     fn test_pad_aligned_for_wrap_no_op_when_equal() {
         let base = vec![(1, " short".to_string())];
         let head = vec![(1, " also".to_string())];
-        let (b, h) = pad_aligned_for_wrap(base.clone(), head.clone(), 80);
+        let (b, h, _bs, _hs) = pad_aligned_for_wrap(base.clone(), head.clone(), &[], 80);
         assert_eq!(b.len(), 1);
         assert_eq!(h.len(), 1);
+    }
+
+    #[test]
+    fn test_pad_aligned_for_wrap_replicates_selection_onto_padding() {
+        // Base wraps to 2 rows (gutter 7 + 5 content = 12 > 10), head to 1 row.
+        // The head side gains a padding row; a selected logical row must mark
+        // both its real row and the padding so the highlight band stays solid.
+        let base = vec![(1, " aaaaa".to_string())];
+        let head = vec![(1, " bb".to_string())];
+        let (b, h, bs, hs) = pad_aligned_for_wrap(base, head, &[true], 10);
+        // selection vecs are parallel to the padded line vecs
+        assert_eq!(bs.len(), b.len());
+        assert_eq!(hs.len(), h.len());
+        // base: 1 real selected row
+        assert_eq!(bs, vec![true]);
+        // head: real row + replicated padding, both selected
+        assert_eq!(hs, vec![true, true]);
     }
 
     // ── allocation-free wrapped row counters ─────────────────────────
@@ -2104,7 +2145,7 @@ mod tests {
         let base = vec![(1, " ctx".to_string()), (2, "-removed line".to_string())];
         let head = vec![(1, " ctx".to_string()), (2, "+added".to_string())];
         let (ab, ah) = align_lines(&base, &head);
-        let (pb, ph) = pad_aligned_for_wrap(ab, ah, 20);
+        let (pb, ph, _bs, _hs) = pad_aligned_for_wrap(ab, ah, &[], 20);
         let padded_total = total_wrapped_rows(&pb, 20).max(total_wrapped_rows(&ph, 20));
         let free_total = aligned_wrapped_row_count(&base, &head, 20);
         assert_eq!(padded_total, free_total);
