@@ -932,7 +932,7 @@ where
                                     move_file_selection(&mut app, 1);
                                 }
                                 Pane::DiffContent => {
-                                    move_diff_cursor(&mut app, 1);
+                                    move_diff_cursor_and_scroll(&mut app, 1);
                                 }
                             },
                             AppMode::Rebase => {
@@ -959,7 +959,7 @@ where
                                     move_file_selection(&mut app, -1);
                                 }
                                 Pane::DiffContent => {
-                                    move_diff_cursor(&mut app, -1);
+                                    move_diff_cursor_and_scroll(&mut app, -1);
                                 }
                             },
                             AppMode::Rebase => {
@@ -982,7 +982,7 @@ where
                                 }
                                 Pane::DiffContent => {
                                     let page = terminal.size()?.height.saturating_sub(6) as isize;
-                                    move_diff_cursor(&mut app, page);
+                                    move_diff_cursor_and_scroll(&mut app, page);
                                 }
                             },
                             AppMode::Rebase => {
@@ -1015,7 +1015,7 @@ where
                                 }
                                 Pane::DiffContent => {
                                     let page = terminal.size()?.height.saturating_sub(6) as isize;
-                                    move_diff_cursor(&mut app, -page);
+                                    move_diff_cursor_and_scroll(&mut app, -page);
                                 }
                             },
                             AppMode::Rebase => {
@@ -1036,6 +1036,7 @@ where
                                     select_edge_file(&mut app, false);
                                 }
                                 Pane::DiffContent => {
+                                    app.diff_cursor = 0;
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
                                         app.scroll_positions.insert(file.clone(), 0);
                                     }
@@ -1055,6 +1056,8 @@ where
                                     select_edge_file(&mut app, true);
                                 }
                                 Pane::DiffContent => {
+                                    let count = diff_line_count(&app);
+                                    app.diff_cursor = count.saturating_sub(1);
                                     if let Some(file) = app.file_names.get(app.current_file_idx) {
                                         app.scroll_positions.insert(file.clone(), usize::MAX);
                                     }
@@ -1200,6 +1203,7 @@ where
                                         app.left_label = payload.left_label;
                                         app.right_label = payload.right_label;
                                         refresh_full_content(&mut app);
+                                        app.reset_diff_selection();
                                         app.status_message = Some(
                                             if app.full_file {
                                                 "Full file: ON"
@@ -1356,7 +1360,9 @@ where
                                     app.mouse_selecting = true;
                                 }
                             }
-                            MouseEventKind::Drag(MouseButton::Left) if app.mouse_selecting => {
+                            MouseEventKind::Drag(MouseButton::Left)
+                                if app.mouse_selecting && matches!(app.app_mode, AppMode::Diff) =>
+                            {
                                 if let Some(line) = row_to_diff_line(
                                     &app,
                                     mouse.row,
@@ -1367,7 +1373,9 @@ where
                                     app.diff_cursor = line;
                                 }
                             }
-                            MouseEventKind::Up(MouseButton::Left) if app.mouse_selecting => {
+                            MouseEventKind::Up(MouseButton::Left)
+                                if app.mouse_selecting && matches!(app.app_mode, AppMode::Diff) =>
+                            {
                                 app.mouse_selecting = false;
                                 // A plain click (no drag) leaves no highlight.
                                 if app.selection_anchor == Some(app.diff_cursor) {
@@ -1391,16 +1399,30 @@ where
                                             &mut app,
                                             if is_down { delta } else { -delta },
                                         );
-                                    } else if let Some(file) =
-                                        app.file_names.get(app.current_file_idx)
-                                    {
-                                        let scroll = *app.scroll_positions.get(file).unwrap_or(&0);
-                                        let new_scroll = if is_down {
-                                            scroll.saturating_add(scroll_amount)
-                                        } else {
-                                            scroll.saturating_sub(scroll_amount)
-                                        };
-                                        app.scroll_positions.insert(file.clone(), new_scroll);
+                                    } else {
+                                        let new_scroll = app
+                                            .file_names
+                                            .get(app.current_file_idx)
+                                            .map(|file| {
+                                                let scroll =
+                                                    *app.scroll_positions.get(file).unwrap_or(&0);
+                                                (
+                                                    file.clone(),
+                                                    if is_down {
+                                                        scroll.saturating_add(scroll_amount)
+                                                    } else {
+                                                        scroll.saturating_sub(scroll_amount)
+                                                    },
+                                                )
+                                            });
+                                        if let Some((file, ns)) = new_scroll {
+                                            app.scroll_positions.insert(file, ns);
+                                            let delta = scroll_amount as isize;
+                                            move_diff_cursor(
+                                                &mut app,
+                                                if is_down { delta } else { -delta },
+                                            );
+                                        }
                                     }
                                 }
                                 AppMode::Rebase => {
@@ -1465,6 +1487,20 @@ where
     }
 }
 
+/// Move the diff cursor and, in wrap mode, nudge the scroll by the same delta
+/// so the viewport tracks the cursor (wrap scroll is in visual rows, so this is
+/// best-effort). In non-wrap mode `follow_cursor` handles the scroll.
+fn move_diff_cursor_and_scroll(app: &mut App, delta: isize) {
+    move_diff_cursor(app, delta);
+    if app.wrap_mode {
+        if let Some(file) = app.file_names.get(app.current_file_idx) {
+            let s = *app.scroll_positions.get(file).unwrap_or(&0);
+            let ns = (s as isize + delta).max(0) as usize;
+            app.scroll_positions.insert(file.clone(), ns);
+        }
+    }
+}
+
 /// Move the diff-pane cursor by `delta` logical lines, clamped to the current
 /// file's line count. The renderer scrolls to keep it visible.
 fn move_diff_cursor(app: &mut App, delta: isize) {
@@ -1512,9 +1548,10 @@ fn row_to_diff_line(
     column: u16,
 ) -> Option<usize> {
     // Header occupies row 0, help occupies the last row; the diff block's top
-    // border is row 1, so its first content row is row 2.
+    // border is row 1, so its first content row is row 2. The bottom border is
+    // term_height-2 and help is term_height-1 — both are excluded.
     const DIFF_CONTENT_TOP: u16 = 2;
-    if row < DIFF_CONTENT_TOP || row >= term_height.saturating_sub(1) {
+    if row < DIFF_CONTENT_TOP || row >= term_height.saturating_sub(2) {
         return None;
     }
     if column <= file_list_width {
@@ -2281,6 +2318,37 @@ mod tests {
         assert_eq!(row_to_diff_line(&app, 4, 40, 30, 10), None);
         // A click on the header/help rows returns None.
         assert_eq!(row_to_diff_line(&app, 0, 40, 30, 35), None);
+        // help row (last row) is rejected
         assert_eq!(row_to_diff_line(&app, 39, 40, 30, 35), None);
+        // bottom border (term_height - 2 = 38) is also rejected
+        assert_eq!(row_to_diff_line(&app, 38, 40, 30, 35), None);
+        // row 37 is valid content
+        assert!(row_to_diff_line(&app, 37, 40, 30, 35).is_some());
+    }
+
+    #[test]
+    fn move_and_scroll_bumps_scroll_only_in_wrap_mode() {
+        let mut app = make_app(vec!["f.rs"], vec!["f.rs"]);
+        app.file_changes.insert(
+            "f.rs".to_string(),
+            (
+                (0..10).map(|i| (i, format!(" l{i}"))).collect(),
+                (0..10).map(|i| (i, format!(" l{i}"))).collect(),
+            ),
+        );
+        app.view_mode = ViewMode::Unified;
+        app.current_file_idx = 0;
+        app.scroll_positions.insert("f.rs".to_string(), 0);
+        // non-wrap: scroll untouched (follow_cursor handles it at render time)
+        app.wrap_mode = false;
+        app.diff_cursor = 0;
+        move_diff_cursor_and_scroll(&mut app, 1);
+        assert_eq!(app.diff_cursor, 1);
+        assert_eq!(*app.scroll_positions.get("f.rs").unwrap(), 0);
+        // wrap: scroll bumped by the same delta
+        app.wrap_mode = true;
+        move_diff_cursor_and_scroll(&mut app, 1);
+        assert_eq!(app.diff_cursor, 2);
+        assert_eq!(*app.scroll_positions.get("f.rs").unwrap(), 1);
     }
 }
