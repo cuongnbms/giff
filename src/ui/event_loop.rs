@@ -1400,10 +1400,8 @@ where
                                             if is_down { delta } else { -delta },
                                         );
                                     } else {
-                                        let new_scroll = app
-                                            .file_names
-                                            .get(app.current_file_idx)
-                                            .map(|file| {
+                                        let new_scroll =
+                                            app.file_names.get(app.current_file_idx).map(|file| {
                                                 let scroll =
                                                     *app.scroll_positions.get(file).unwrap_or(&0);
                                                 (
