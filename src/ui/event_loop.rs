@@ -1489,8 +1489,13 @@ where
 /// so the viewport tracks the cursor (wrap scroll is in visual rows, so this is
 /// best-effort). In non-wrap mode `follow_cursor` handles the scroll.
 fn move_diff_cursor_and_scroll(app: &mut App, delta: isize) {
+    let before = app.diff_cursor;
     move_diff_cursor(app, delta);
-    if app.wrap_mode {
+    // Only nudge the scroll when the cursor actually moved; otherwise repeated
+    // keypresses at the first/last line would advance the stored scroll past
+    // the content (clamp_scroll corrects it at render, but the stored value
+    // would briefly be wrong and could be restored when tabbing back).
+    if app.wrap_mode && app.diff_cursor != before {
         if let Some(file) = app.file_names.get(app.current_file_idx) {
             let s = *app.scroll_positions.get(file).unwrap_or(&0);
             let ns = (s as isize + delta).max(0) as usize;
@@ -2348,5 +2353,12 @@ mod tests {
         move_diff_cursor_and_scroll(&mut app, 1);
         assert_eq!(app.diff_cursor, 2);
         assert_eq!(*app.scroll_positions.get("f.rs").unwrap(), 1);
+        // wrap at the bottom boundary: cursor can't move, so scroll must NOT
+        // advance past the content.
+        app.diff_cursor = 9; // last of 10 lines
+        app.scroll_positions.insert("f.rs".to_string(), 5);
+        move_diff_cursor_and_scroll(&mut app, 1);
+        assert_eq!(app.diff_cursor, 9);
+        assert_eq!(*app.scroll_positions.get("f.rs").unwrap(), 5);
     }
 }
