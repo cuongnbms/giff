@@ -1681,6 +1681,7 @@ mod tests {
             file_changes: HashMap::new(),
             full_content: HashMap::new(),
             file_meta: HashMap::new(),
+            project_name: String::new(),
             left_label: String::new(),
             right_label: String::new(),
             current_file_idx: 0,

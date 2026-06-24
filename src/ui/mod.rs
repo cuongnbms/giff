@@ -104,6 +104,7 @@ pub fn run_app(
         file_changes,
         full_content,
         file_meta,
+        project_name: diff::repo_name(),
         left_label,
         right_label,
         current_file_idx: 0,

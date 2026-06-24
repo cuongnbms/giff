@@ -42,6 +42,9 @@ pub struct App {
     /// Per-file metadata (rename info, etc.) parsed from the diff headers.
     /// Parallel to `file_changes`: same keys.
     pub file_meta: FileMetaMap,
+    /// Name of the repository (the repo-root folder name), shown in the header.
+    /// Empty when it can't be determined.
+    pub project_name: String,
     pub left_label: String,
     pub right_label: String,
     pub current_file_idx: usize,
@@ -152,6 +155,7 @@ mod tests {
             file_changes: Default::default(),
             full_content: Default::default(),
             file_meta: Default::default(),
+            project_name: String::new(),
             left_label: String::new(),
             right_label: String::new(),
             current_file_idx: 0,

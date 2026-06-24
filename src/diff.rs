@@ -787,6 +787,20 @@ pub fn git_repo_root() -> Result<String, Box<dyn Error>> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Name of the repository — the final component of the repo-root path. Empty
+/// when not in a git repo or the root has no file name.
+pub fn repo_name() -> String {
+    git_repo_root()
+        .ok()
+        .as_deref()
+        .and_then(|root| {
+            std::path::Path::new(root)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
+}
+
 /// Return the current branch name (e.g. "main"). Errors when HEAD is
 /// detached or git is otherwise unavailable.
 pub fn current_branch() -> Result<String, Box<dyn Error>> {

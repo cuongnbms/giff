@@ -150,6 +150,16 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(" "));
+    if !app.project_name.is_empty() {
+        spans.push(Span::styled(
+            app.project_name.clone(),
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            " \u{2502} ",
+            Style::default().fg(t.border_dim),
+        ));
+    }
     if let Some(bs) = &app.branch_status {
         if !bs.name.is_empty() {
             spans.extend(branch_status_spans(t, bs));
