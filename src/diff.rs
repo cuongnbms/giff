@@ -323,20 +323,26 @@ pub fn get_changes_since_fork(
     })
 }
 
-/// Resolve the default base for fork-point diffs: the auto-detected parent
-/// branch ([`detect_parent_base`]), else the first of `main`/`master` that
-/// exists, else an actionable error.
+/// Resolve the default base for fork-point diffs: on a trunk branch
+/// ([`trunk_default_base`]), the branch's own remote; otherwise the
+/// auto-detected parent branch ([`detect_parent_base`]), else the first of
+/// `main`/`master` that exists, else an actionable error.
 pub fn default_fork_base() -> Result<String, Box<dyn Error>> {
+    // On `main`/`master`, fork-point detection is meaningless (the parent is
+    // the branch itself → empty diff). Diff against its remote instead so
+    // local-but-unpushed commits show. Skip if that remote ref doesn't exist.
+    let current = current_branch().unwrap_or_default();
+    let upstream = get_upstream_branch()?;
+    if let Some(base) = trunk_default_base(&current, upstream.as_deref()) {
+        if ref_exists(&base)? {
+            return Ok(base);
+        }
+    }
     if let Some(parent) = detect_parent_base()? {
         return Ok(parent);
     }
     for name in ["main", "master"] {
-        let exists = Command::new("git")
-            .args(["rev-parse", "--verify", "--quiet", name])
-            .output()?
-            .status
-            .success();
-        if exists {
+        if ref_exists(name)? {
             return Ok(name.to_string());
         }
     }
@@ -344,6 +350,30 @@ pub fn default_fork_base() -> Result<String, Box<dyn Error>> {
         "could not detect a parent branch and no main/master found; specify a base: giff -b <ref>"
             .into(),
     )
+}
+
+/// Default diff base for a trunk branch. On `main`/`master`, fork-point
+/// detection against the branch itself yields an empty diff, so prefer the
+/// branch's configured `upstream` (e.g. `origin/main`), falling back to
+/// `origin/<branch>`. Returns `None` for any non-trunk branch, leaving normal
+/// fork-point detection in charge.
+fn trunk_default_base(current: &str, upstream: Option<&str>) -> Option<String> {
+    if !matches!(current, "main" | "master") {
+        return None;
+    }
+    Some(match upstream {
+        Some(u) => u.to_string(),
+        None => format!("origin/{}", current),
+    })
+}
+
+/// Whether `git rev-parse --verify` resolves `reference` (any commit-ish).
+fn ref_exists(reference: &str) -> Result<bool, Box<dyn Error>> {
+    Ok(Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .output()?
+        .status
+        .success())
 }
 
 /// Best common ancestor of `base` and `head` (`git merge-base`).
@@ -1548,6 +1578,38 @@ Binary files a/image.png and b/image.png differ
             ("alpha".to_string(), 2, true),
         ];
         assert_eq!(pick_nearest_base(&candidates), Some("alpha".to_string()));
+    }
+
+    // ── trunk_default_base: main/master diffs against its remote ────────
+
+    #[test]
+    fn trunk_uses_configured_upstream() {
+        assert_eq!(
+            trunk_default_base("main", Some("origin/main")),
+            Some("origin/main".to_string())
+        );
+        assert_eq!(
+            trunk_default_base("master", Some("upstream/master")),
+            Some("upstream/master".to_string())
+        );
+    }
+
+    #[test]
+    fn trunk_falls_back_to_origin_when_no_upstream() {
+        assert_eq!(
+            trunk_default_base("main", None),
+            Some("origin/main".to_string())
+        );
+        assert_eq!(
+            trunk_default_base("master", None),
+            Some("origin/master".to_string())
+        );
+    }
+
+    #[test]
+    fn trunk_returns_none_for_feature_branch() {
+        assert_eq!(trunk_default_base("feat/x", Some("origin/feat/x")), None);
+        assert_eq!(trunk_default_base("feat/x", None), None);
     }
 
     // ── parse_fork_candidate: for-each-ref line → scored candidate ──────
